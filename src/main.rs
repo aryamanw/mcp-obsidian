@@ -1,4 +1,5 @@
 mod config;
+mod graph;
 mod parse;
 mod vault;
 
