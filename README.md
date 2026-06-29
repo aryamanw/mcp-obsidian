@@ -40,7 +40,15 @@ A high-performance [Model Context Protocol](https://modelcontextprotocol.io) ser
 
 ## Installation
 
-### Option 1: One-liner (Windows)
+### Option 1: One-liner
+
+**macOS / Linux:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/aryamanw/mcp-obsidian/main/install.sh | bash
+```
+
+**Windows:**
 
 ```powershell
 irm https://raw.githubusercontent.com/aryamanw/mcp-obsidian/main/install.ps1 | iex
@@ -48,9 +56,11 @@ irm https://raw.githubusercontent.com/aryamanw/mcp-obsidian/main/install.ps1 | i
 
 This downloads the latest release, installs it to `~/.local/bin`, and optionally adds it to your PATH.
 
+> On macOS, the binary is unsigned. The install script removes the quarantine attribute automatically; if you download it manually instead, run `xattr -d com.apple.quarantine /path/to/obsidian-mcp` before first use, or right-click the binary in Finder and choose "Open" to approve it via Gatekeeper.
+
 ### Option 2: Direct download
 
-Download `obsidian-mcp.exe` from the [Releases](https://github.com/aryamanw/mcp-obsidian/releases) page and place it somewhere on your PATH.
+Download the archive for your platform from the [Releases](https://github.com/aryamanw/mcp-obsidian/releases) page (`obsidian-mcp-*-apple-darwin.tar.gz` for macOS, `*-windows-msvc.zip` for Windows, `*-linux-gnu.tar.gz` for Linux) and place the extracted binary somewhere on your PATH.
 
 ### Option 3: Build from source
 
@@ -60,11 +70,19 @@ cd obsidian-mcp
 cargo build --release
 ```
 
-The binary will be at `target/release/obsidian-mcp.exe`.
+The binary will be at `target/release/obsidian-mcp` (macOS/Linux) or `target/release/obsidian-mcp.exe` (Windows).
 
 ## Configuration
 
 Set the `OBSIDIAN_VAULT` environment variable to the path of your Obsidian vault:
+
+**macOS / Linux:**
+
+```bash
+export OBSIDIAN_VAULT="/path/to/your/vault"
+```
+
+**Windows:**
 
 ```powershell
 $env:OBSIDIAN_VAULT = "C:\path\to\your\vault"
@@ -77,7 +95,8 @@ The server validates this path on startup and rejects all operations that attemp
 Run the server:
 
 ```bash
-obsidian-mcp.exe
+obsidian-mcp        # macOS / Linux
+obsidian-mcp.exe     # Windows
 ```
 
 The server communicates over **stdio** using the MCP protocol. Logs are written to stderr; MCP messages flow over stdout.
@@ -88,6 +107,23 @@ Add to your MCP client's configuration file:
 
 **Claude Desktop** (`claude_desktop_config.json`):
 
+macOS:
+
+```json
+{
+  "mcpServers": {
+    "obsidian": {
+      "command": "/path/to/obsidian-mcp",
+      "env": {
+        "OBSIDIAN_VAULT": "/path/to/your/vault"
+      }
+    }
+  }
+}
+```
+
+Windows:
+
 ```json
 {
   "mcpServers": {
@@ -101,20 +137,7 @@ Add to your MCP client's configuration file:
 }
 ```
 
-**VS Code / Cline** (`cline_mcp_settings.json` or similar):
-
-```json
-{
-  "mcpServers": {
-    "obsidian": {
-      "command": "path\\to\\obsidian-mcp.exe",
-      "env": {
-        "OBSIDIAN_VAULT": "C:\\path\\to\\your\\vault"
-      }
-    }
-  }
-}
-```
+**VS Code / Cline** (`cline_mcp_settings.json` or similar): same format as above, using the path appropriate to your OS.
 
 ## Tools
 
