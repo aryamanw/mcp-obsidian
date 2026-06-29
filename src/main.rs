@@ -1,6 +1,7 @@
 mod config;
 mod graph;
 mod parse;
+mod tools;
 mod vault;
 
 #[tokio::main]
