@@ -8,3 +8,9 @@ pub struct GraphPathRequest {
     #[schemars(description = "Target note path")]
     pub to: String,
 }
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GraphStatsRequest {}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GraphCommunitiesRequest {}

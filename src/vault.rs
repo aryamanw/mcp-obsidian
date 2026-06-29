@@ -11,8 +11,6 @@ pub struct NoteInfo {
     pub body: String,
     pub tags: Vec<String>,
     pub links: Vec<String>,
-    #[allow(dead_code)]
-    pub backlinks: Vec<String>,
 }
 
 pub struct Vault {
@@ -39,16 +37,15 @@ impl Vault {
             body: parsed.body,
             tags: note_tags,
             links: note_links,
-            backlinks: Vec::new(),
         })
     }
 
     pub fn list_vault(&self, subpath: Option<&str>, depth: Option<usize>) -> anyhow::Result<Vec<String>> {
         let start = match subpath {
-            Some(p) => self.config.vault_path.join(p),
+            Some(p) => self.validate_path(p)?,
             None => self.config.vault_path.clone(),
         };
-        let max_depth = depth.unwrap_or(10);
+        let max_depth = depth.unwrap_or(10).min(20);
 
         let mut entries = Vec::new();
         for entry in WalkDir::new(&start)
@@ -75,10 +72,10 @@ impl Vault {
     }
 
     pub fn create_note(&self, note_path: &str, content: &str, frontmatter_fields: Option<&HashMap<String, String>>) -> anyhow::Result<NoteInfo> {
-        let full_path = self.config.vault_path.join(note_path);
+        let full_path = self.validate_parent(note_path)?;
 
         if full_path.exists() {
-            return Err(anyhow::anyhow!("Note already exists: {}", note_path));
+            return Err(anyhow::anyhow!("Note already exists"));
         }
 
         if let Some(parent) = full_path.parent() {
@@ -245,12 +242,13 @@ impl Vault {
         let templates_dir = self.config.vault_path.join("Templates");
         if templates_dir.exists() { return templates_dir; }
 
-        let obsidian_config = self.config.vault_path.join(".obsidian").join("app.json");
+        let obsidian_config = self.config.vault_path.join(".obsidian").join("templates.json");
         if let Ok(config_str) = std::fs::read_to_string(&obsidian_config) {
             if let Ok(config) = serde_json::from_str::<serde_json::Value>(&config_str) {
-                if let Some(folder) = config.get("attachmentFolderPath").and_then(|v| v.as_str()) {
-                    let dir = self.config.vault_path.join(folder);
-                    if dir.exists() { return dir; }
+                if let Some(folder) = config.get("folder").and_then(|v| v.as_str()) {
+                    if let Ok(dir) = self.validate_path(folder) {
+                        if dir.exists() { return dir; }
+                    }
                 }
             }
         }
@@ -282,12 +280,15 @@ impl Vault {
     pub fn apply_template(&self, template_name: &str, note_path: &str) -> anyhow::Result<()> {
         let templates_dir = self.get_templates_dir();
         let template_path = templates_dir.join(format!("{}.md", template_name));
-
-        if !template_path.exists() {
-            return Err(anyhow::anyhow!("Template not found: {}", template_name));
+        let canonical_template = template_path.canonicalize()
+            .map_err(|_| anyhow::anyhow!("Template not found"))?;
+        let canonical_templates_dir = templates_dir.canonicalize()
+            .map_err(|_| anyhow::anyhow!("Templates directory error"))?;
+        if !canonical_template.starts_with(&canonical_templates_dir) {
+            return Err(anyhow::anyhow!("Access denied: template path outside templates directory"));
         }
 
-        let template_content = std::fs::read_to_string(&template_path)?;
+        let template_content = std::fs::read_to_string(&canonical_template)?;
         let note_full_path = self.resolve_note_path(note_path)?;
 
         let existing = if note_full_path.exists() {
@@ -326,7 +327,26 @@ impl Vault {
 
     pub fn get_daily_note(&self, date: Option<&str>) -> anyhow::Result<NoteInfo> {
         let date_str = match date {
-            Some(d) => d.to_string(),
+            Some(d) => {
+                if !d.chars().all(|c| c.is_ascii_digit() || c == '-') || d.len() != 10 {
+                    return Err(anyhow::anyhow!("Invalid date format: use YYYY-MM-DD"));
+                }
+                let parts: Vec<&str> = d.split('-').collect();
+                if parts.len() != 3
+                    || parts[0].len() != 4
+                    || parts[1].len() != 2
+                    || parts[2].len() != 2
+                {
+                    return Err(anyhow::anyhow!("Invalid date format: use YYYY-MM-DD"));
+                }
+                let year: i32 = parts[0].parse().unwrap_or(0);
+                let month: u32 = parts[1].parse().unwrap_or(0);
+                let day: u32 = parts[2].parse().unwrap_or(0);
+                if !(1..=12).contains(&month) || !(1..=31).contains(&day) || year < 1900 {
+                    return Err(anyhow::anyhow!("Invalid date: out of range"));
+                }
+                d.to_string()
+            }
             None => chrono::Local::now().format("%Y-%m-%d").to_string(),
         };
 
@@ -359,18 +379,60 @@ impl Vault {
         self.read_note(&rel)
     }
 
+    fn validate_path(&self, user_path: &str) -> anyhow::Result<PathBuf> {
+        let vault_canonical = self.config.vault_path.canonicalize()
+            .map_err(|_| anyhow::anyhow!("Vault path error"))?;
+
+        let joined = self.config.vault_path.join(user_path);
+        if let Ok(canonical) = joined.canonicalize() {
+            if !canonical.starts_with(&vault_canonical) {
+                return Err(anyhow::anyhow!("Access denied: path outside vault"));
+            }
+            return Ok(canonical);
+        }
+
+        let safe = self.resolve_new_path(&joined, &vault_canonical)?;
+        Ok(safe)
+    }
+
+    fn validate_parent(&self, user_path: &str) -> anyhow::Result<PathBuf> {
+        let vault_canonical = self.config.vault_path.canonicalize()
+            .map_err(|_| anyhow::anyhow!("Vault path error"))?;
+
+        let joined = self.config.vault_path.join(user_path);
+        self.resolve_new_path(&joined, &vault_canonical)
+    }
+
+    fn resolve_new_path(&self, joined: &PathBuf, vault_canonical: &PathBuf) -> anyhow::Result<PathBuf> {
+        let parent = joined.parent()
+            .ok_or_else(|| anyhow::anyhow!("Invalid path"))?;
+
+        let canonical_parent = parent.canonicalize()
+            .map_err(|_| anyhow::anyhow!("Parent directory not found"))?;
+
+        if !canonical_parent.starts_with(vault_canonical) {
+            return Err(anyhow::anyhow!("Access denied: path outside vault"));
+        }
+
+        let filename = joined.file_name()
+            .ok_or_else(|| anyhow::anyhow!("Invalid path"))?;
+
+        let safe = canonical_parent.join(filename);
+        Ok(safe)
+    }
+
     fn resolve_note_path(&self, note_path: &str) -> anyhow::Result<PathBuf> {
-        let full_path = self.config.vault_path.join(note_path);
+        let full_path = self.validate_path(note_path)?;
         if full_path.exists() {
             return Ok(full_path);
         }
 
-        let with_ext = self.config.vault_path.join(format!("{}.md", note_path));
+        let with_ext = self.validate_path(&format!("{}.md", note_path))?;
         if with_ext.exists() {
             return Ok(with_ext);
         }
 
-        Err(anyhow::anyhow!("Note not found: {}", note_path))
+        Err(anyhow::anyhow!("Note not found"))
     }
 }
 

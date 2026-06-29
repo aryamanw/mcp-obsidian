@@ -338,7 +338,7 @@ impl ObsidianMcp {
     #[tool(description = "List available templates in the vault's templates folder.")]
     fn list_templates(
         &self,
-        Parameters(()): Parameters<()>,
+        Parameters(_req): Parameters<tools::templates::ListTemplatesRequest>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         match self.vault.list_templates() {
             Ok(templates) => {
@@ -392,7 +392,7 @@ impl ObsidianMcp {
     #[tool(description = "Get vault graph statistics: node count, edge count, density.")]
     fn graph_stats(
         &self,
-        Parameters(()): Parameters<()>,
+        Parameters(_req): Parameters<tools::graph::GraphStatsRequest>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         match self.analyzer.stats() {
             Ok(stats) => {
@@ -410,7 +410,7 @@ impl ObsidianMcp {
     #[tool(description = "Get communities (connected components) from Obsidian's note graph.")]
     fn graph_communities(
         &self,
-        Parameters(()): Parameters<()>,
+        Parameters(_req): Parameters<tools::graph::GraphCommunitiesRequest>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         match self.analyzer.communities() {
             Ok(communities) => {

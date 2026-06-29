@@ -53,8 +53,7 @@ impl GraphAnalyzer {
         let path = self.graph_path();
         if !path.exists() {
             return Err(anyhow::anyhow!(
-                "Graph data not available at {}. Open Obsidian once to generate it.",
-                path.display()
+                "Graph data not available. Open Obsidian once to generate it."
             ));
         }
         let content = std::fs::read_to_string(&path)?;

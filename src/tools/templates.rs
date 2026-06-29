@@ -14,3 +14,6 @@ pub struct GetDailyNoteRequest {
     #[schemars(description = "Date in YYYY-MM-DD format (optional, defaults to today)")]
     pub date: Option<String>,
 }
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ListTemplatesRequest {}

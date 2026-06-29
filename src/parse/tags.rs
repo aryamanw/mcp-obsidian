@@ -1,9 +1,15 @@
 use regex::Regex;
 use std::collections::HashSet;
+use std::sync::OnceLock;
+
+fn tag_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"#([\w/-]+)").unwrap())
+}
 
 pub fn extract_tags(content: &str) -> HashSet<String> {
     let mut tags = HashSet::new();
-    let re = Regex::new(r"#([\w/-]+)").unwrap();
+    let re = tag_regex();
     for cap in re.captures_iter(content) {
         let tag = cap[1].to_string();
         tags.insert(tag);

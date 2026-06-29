@@ -1,5 +1,11 @@
 use regex::Regex;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+fn wikilink_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"\[\[([^\]|]+?)(?:\|([^\]]+?))?\]\]").unwrap())
+}
 
 #[derive(Debug, Clone)]
 pub struct Wikilink {
@@ -11,7 +17,7 @@ pub struct Wikilink {
 }
 
 pub fn extract_wikilinks(content: &str) -> Vec<Wikilink> {
-    let re = Regex::new(r"\[\[([^\]|]+?)(?:\|([^\]]+?))?\]\]").unwrap();
+    let re = wikilink_regex();
     let mut links = Vec::new();
 
     for cap in re.captures_iter(content) {

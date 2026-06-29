@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use yaml_rust2::{YamlLoader, Yaml};
 
+const MAX_FRONTMATTER_BYTES: usize = 8192;
+
 #[derive(Debug, Clone)]
 pub struct NoteContent {
     pub frontmatter: HashMap<String, String>,
@@ -16,6 +18,13 @@ pub fn parse(content: &str) -> NoteContent {
         let without_opening = &content[3..];
         if let Some(end_idx) = without_opening.find("---") {
             let yaml_str = &without_opening[..end_idx];
+            if yaml_str.len() > MAX_FRONTMATTER_BYTES {
+                return NoteContent {
+                    frontmatter: HashMap::new(),
+                    body: content.to_string(),
+                    raw,
+                };
+            }
             let body = without_opening[end_idx + 3..].trim_start_matches('\n').to_string();
 
             let frontmatter = parse_yaml(yaml_str);
