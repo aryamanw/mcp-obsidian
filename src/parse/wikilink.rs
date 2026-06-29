@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone)]
 pub struct Wikilink {
     pub target: String,
+    #[allow(dead_code)]
     pub alias: Option<String>,
+    #[allow(dead_code)]
     pub raw: String,
 }
 

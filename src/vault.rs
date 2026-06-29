@@ -11,6 +11,7 @@ pub struct NoteInfo {
     pub body: String,
     pub tags: Vec<String>,
     pub links: Vec<String>,
+    #[allow(dead_code)]
     pub backlinks: Vec<String>,
 }
 

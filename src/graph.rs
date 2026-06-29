@@ -13,6 +13,7 @@ pub struct ObsidianGraph {
 pub struct GraphNode {
     pub id: String,
     #[serde(default)]
+    #[allow(dead_code)]
     pub path: Option<String>,
 }
 

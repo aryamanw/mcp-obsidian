@@ -5,6 +5,7 @@ use yaml_rust2::{YamlLoader, Yaml};
 pub struct NoteContent {
     pub frontmatter: HashMap<String, String>,
     pub body: String,
+    #[allow(dead_code)]
     pub raw: String,
 }
 
