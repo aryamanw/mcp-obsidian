@@ -172,6 +172,96 @@ impl ObsidianMcp {
 
     // ===== Write Tools =====
 
+    #[tool(description = "Create a new folder in the vault.")]
+    fn create_folder(
+        &self,
+        Parameters(req): Parameters<tools::write::CreateFolderRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        match self.vault.create_folder(&req.path) {
+            Ok(()) => {
+                let result = serde_json::json!({
+                    "path": req.path,
+                    "message": "Folder created successfully",
+                });
+                Ok(CallToolResult::success(vec![Content::text(result.to_string())]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+        }
+    }
+
+    #[tool(description = "Rename or move a note. Updates all [[wikilinks]] that point to the old path.")]
+    fn rename_note(
+        &self,
+        Parameters(req): Parameters<tools::write::RenameNoteRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        match self.vault.rename_note(&req.source, &req.dest) {
+            Ok(note) => {
+                let result = serde_json::json!({
+                    "path": note.path,
+                    "message": format!("Note renamed from '{}' to '{}'", req.source, req.dest),
+                });
+                Ok(CallToolResult::success(vec![Content::text(result.to_string())]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+        }
+    }
+
+    #[tool(description = "Merge source note into destination note. Appends source body with a heading separator, then deletes source.")]
+    fn merge_notes(
+        &self,
+        Parameters(req): Parameters<tools::write::MergeNotesRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        match self.vault.merge_notes(&req.source, &req.dest) {
+            Ok(note) => {
+                let result = serde_json::json!({
+                    "path": note.path,
+                    "message": format!("Merged '{}' into '{}'", req.source, req.dest),
+                });
+                Ok(CallToolResult::success(vec![Content::text(result.to_string())]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+        }
+    }
+
+    #[tool(description = "Add or remove tags across all notes matching a full-text search query.")]
+    fn bulk_tag(
+        &self,
+        Parameters(req): Parameters<tools::write::BulkTagRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let add = req.add_tags.unwrap_or_default();
+        let remove = req.remove_tags.unwrap_or_default();
+        match self.vault.bulk_tag(&req.query, &add, &remove) {
+            Ok(count) => {
+                let result = serde_json::json!({
+                    "notes_updated": count,
+                    "message": format!("Updated tags on {} note(s)", count),
+                });
+                Ok(CallToolResult::success(vec![Content::text(result.to_string())]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+        }
+    }
+
+    #[tool(description = "Find notes related by content similarity and add a '## Related' section with [[wikilinks]].")]
+    fn link_related_notes(
+        &self,
+        Parameters(req): Parameters<tools::write::LinkRelatedNotesRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        match self.vault.link_related_notes(&req.path) {
+            Ok(note) => {
+                let related = note.links;
+                let result = serde_json::json!({
+                    "path": note.path,
+                    "related_count": related.len(),
+                    "links": related,
+                    "message": format!("Linked to {} related note(s)", related.len()),
+                });
+                Ok(CallToolResult::success(vec![Content::text(result.to_string())]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+        }
+    }
+
     #[tool(description = "Create a new note with optional content and frontmatter.")]
     fn create_note(
         &self,

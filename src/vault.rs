@@ -71,6 +71,34 @@ impl Vault {
         Ok(entries)
     }
 
+    pub fn create_folder(&self, folder_path: &str) -> anyhow::Result<()> {
+        let vault_canonical = self.config.vault_path.canonicalize()
+            .map_err(|_| anyhow::anyhow!("Vault path error"))?;
+
+        let joined = self.config.vault_path.join(folder_path);
+
+        if joined.exists() {
+            return Err(anyhow::anyhow!("Folder already exists"));
+        }
+
+        let mut ancestor = joined.as_path();
+        loop {
+            if ancestor.exists() {
+                let canonical = ancestor.canonicalize()
+                    .map_err(|_| anyhow::anyhow!("Path resolution error"))?;
+                if !canonical.starts_with(&vault_canonical) {
+                    return Err(anyhow::anyhow!("Access denied: path outside vault"));
+                }
+                break;
+            }
+            ancestor = ancestor.parent()
+                .ok_or_else(|| anyhow::anyhow!("Invalid path"))?;
+        }
+
+        std::fs::create_dir_all(&joined)?;
+        Ok(())
+    }
+
     pub fn create_note(&self, note_path: &str, content: &str, frontmatter_fields: Option<&HashMap<String, String>>) -> anyhow::Result<NoteInfo> {
         let full_path = self.validate_parent(note_path)?;
 
@@ -233,6 +261,171 @@ impl Vault {
         }
 
         Ok(backlinking_notes)
+    }
+
+    pub fn rename_note(&self, source: &str, dest: &str) -> anyhow::Result<NoteInfo> {
+        let source_full = self.resolve_note_path(source)?;
+        let source_stem = source_full.file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+        let source_rel = wikilink::relative_path(&source_full, &self.config.vault_path);
+
+        let dest_full = self.validate_parent(dest)?;
+        if dest_full.exists() {
+            return Err(anyhow::anyhow!("Destination already exists"));
+        }
+
+        if let Some(parent) = dest_full.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::rename(&source_full, &dest_full)?;
+
+        let new_target = dest.trim_end_matches(".md").to_string();
+
+        let backlinks = self.backlinks(&source_rel)?;
+        for bl_path in &backlinks {
+            if let Ok(full_path) = self.resolve_note_path(bl_path) {
+                if let Ok(content) = std::fs::read_to_string(&full_path) {
+                    let links = wikilink::extract_wikilinks(&content);
+                    let mut new_content = content.clone();
+                    let mut changed = false;
+                    for link in &links {
+                        let link_stem = Path::new(&link.target).file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or(&link.target);
+                        if link_stem == source_stem {
+                            let replacement = if let Some(alias) = &link.alias {
+                                format!("[[{}|{}]]", new_target, alias)
+                            } else {
+                                format!("[[{}]]", new_target)
+                            };
+                            new_content = new_content.replace(&link.raw, &replacement);
+                            changed = true;
+                        }
+                    }
+                    if changed {
+                        std::fs::write(&full_path, &new_content)?;
+                    }
+                }
+            }
+        }
+
+        self.read_note(dest)
+    }
+
+    pub fn merge_notes(&self, source: &str, dest: &str) -> anyhow::Result<NoteInfo> {
+        let source_full = self.resolve_note_path(source)?;
+        let source_name = source_full.file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("source")
+            .to_string();
+        let source_body = {
+            let content = std::fs::read_to_string(&source_full)?;
+            frontmatter::parse(&content).body
+        };
+
+        let dest_full = self.resolve_note_path(dest)?;
+        let dest_rel = wikilink::relative_path(&dest_full, &self.config.vault_path);
+        let dest_content = std::fs::read_to_string(&dest_full)?;
+
+        let merged = format!(
+            "{}\n\n## Merged from {}\n\n{}",
+            dest_content.trim_end(),
+            source_name,
+            source_body.trim()
+        );
+        std::fs::write(&dest_full, &merged)?;
+        std::fs::remove_file(&source_full)?;
+
+        self.read_note(&dest_rel)
+    }
+
+    pub fn bulk_tag(&self, query: &str, add_tags: &[String], remove_tags: &[String]) -> anyhow::Result<usize> {
+        let notes = self.search_notes(query, 1000)?;
+        let mut count = 0;
+
+        for note in &notes {
+            if let Ok(full_path) = self.resolve_note_path(&note.path) {
+                if let Ok(content) = std::fs::read_to_string(&full_path) {
+                    let mut parsed = frontmatter::parse(&content);
+                    let changed = update_frontmatter_tags(&mut parsed.frontmatter, add_tags, remove_tags);
+                    if changed {
+                        let fm_str = serialize_frontmatter(&parsed.frontmatter);
+                        let new_content = if parsed.frontmatter.is_empty() {
+                            parsed.body
+                        } else {
+                            format!("---\n{}---\n{}", fm_str, parsed.body)
+                        };
+                        std::fs::write(&full_path, &new_content)?;
+                        count += 1;
+                    }
+                }
+            }
+        }
+
+        Ok(count)
+    }
+
+    pub fn link_related_notes(&self, note_path: &str) -> anyhow::Result<NoteInfo> {
+        let note = self.read_note(note_path)?;
+        let full_path = self.resolve_note_path(note_path)?;
+
+        let significant = extract_significant_words(&note.body, 10);
+        if significant.is_empty() {
+            return Ok(note);
+        }
+
+        let source_key = note_path.trim_end_matches(".md");
+        let mut related: Vec<(String, usize)> = Vec::new();
+        for entry in WalkDir::new(&self.config.vault_path)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "md"))
+        {
+            let rel = wikilink::relative_path(entry.path(), &self.config.vault_path);
+            if rel.trim_end_matches(".md") == source_key {
+                continue;
+            }
+
+            if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                let parsed = frontmatter::parse(&content);
+                let content_lower = parsed.body.to_lowercase();
+                let score: usize = significant.iter()
+                    .filter(|word| content_lower.contains(word.as_str()))
+                    .count();
+                if score > 0 {
+                    let target = rel.strip_suffix(".md").unwrap_or(&rel).to_string();
+                    related.push((target, score));
+                }
+            }
+        }
+
+        related.sort_by(|a, b| b.1.cmp(&a.1));
+        related.truncate(5);
+
+        if related.is_empty() {
+            return Ok(note);
+        }
+
+        let mut body = note.body.trim().to_string();
+        if !body.contains("## Related") {
+            body.push_str("\n\n## Related\n\n");
+            for (target, _) in &related {
+                body.push_str(&format!("- [[{}]]\n", target));
+            }
+
+            let fm_str = serialize_frontmatter(&note.frontmatter);
+            let new_content = if note.frontmatter.is_empty() {
+                body
+            } else {
+                format!("---\n{}---\n{}", fm_str, body)
+            };
+
+            std::fs::write(&full_path, &new_content)?;
+        }
+
+        self.read_note(note_path)
     }
 
     pub fn get_templates_dir(&self) -> PathBuf {
@@ -434,6 +627,64 @@ impl Vault {
 
         Err(anyhow::anyhow!("Note not found"))
     }
+}
+
+fn update_frontmatter_tags(fm: &mut HashMap<String, String>, add_tags: &[String], remove_tags: &[String]) -> bool {
+    if add_tags.is_empty() && remove_tags.is_empty() {
+        return false;
+    }
+
+    let mut changed = false;
+    let tag_str = fm.entry("tags".to_string()).or_default();
+    let mut tags: Vec<String> = tag_str.split(',')
+        .map(|t| t.trim().trim_start_matches('#').to_string())
+        .filter(|t| !t.is_empty())
+        .collect();
+
+    for tag in add_tags {
+        let tag = tag.trim_start_matches('#').to_string();
+        if !tags.contains(&tag) {
+            tags.push(tag);
+            changed = true;
+        }
+    }
+
+    for tag in remove_tags {
+        let tag = tag.trim_start_matches('#').to_string();
+        if let Some(pos) = tags.iter().position(|t| t == &tag) {
+            tags.remove(pos);
+            changed = true;
+        }
+    }
+
+    if changed {
+        *tag_str = tags.join(", ");
+    }
+
+    changed
+}
+
+fn extract_significant_words(text: &str, max_words: usize) -> Vec<String> {
+    let stop_words = [
+        "the", "and", "for", "are", "but", "not", "you", "all", "can", "had",
+        "her", "was", "one", "our", "out", "has", "have", "been", "some", "same",
+        "into", "than", "that", "them", "then", "they", "this", "just", "also",
+        "with", "very", "what", "when", "from", "their", "there", "which",
+        "about", "would", "could", "should", "other", "after", "first",
+        "where", "these", "those", "being", "while", "over", "such", "each",
+        "like", "well", "make", "made", "much", "more", "most", "many",
+    ];
+    let mut words: Vec<String> = text.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.len() >= 3)
+        .filter(|w| !stop_words.contains(w))
+        .map(|w| w.to_string())
+        .collect();
+
+    words.sort();
+    words.dedup();
+    words.truncate(max_words);
+    words
 }
 
 fn build_note_content(body: &str, frontmatter_fields: Option<&HashMap<String, String>>) -> String {

@@ -6,7 +6,7 @@ param(
 )
 
 $RepoOwner = "aryamanw"  
-$RepoName  = "obsidian-mcp"
+$RepoName  = "mcp-obsidian"
 $Repo      = "$RepoOwner/$RepoName"
 
 $ErrorActionPreference = "Stop"

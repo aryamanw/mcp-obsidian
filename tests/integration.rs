@@ -176,6 +176,100 @@ fn test_vault_list_templates() {
 }
 
 #[test]
+fn test_vault_rename_note() {
+    let vault = obsidian_mcp::vault::Vault::new(test_config());
+
+    let _ = std::fs::remove_file(test_vault_path().join("_test-rename-source.md"));
+    let _ = std::fs::remove_file(test_vault_path().join("_test-rename-dest.md"));
+
+    let _ = vault.create_note("_test-rename-source.md", "Content to rename", None);
+
+    let renamed = vault.rename_note("_test-rename-source.md", "_test-rename-dest.md").unwrap();
+    assert!(renamed.body.contains("Content to rename"));
+    assert!(!test_vault_path().join("_test-rename-source.md").exists());
+    assert!(test_vault_path().join("_test-rename-dest.md").exists());
+
+    let _ = std::fs::remove_file(test_vault_path().join("_test-rename-dest.md"));
+}
+
+#[test]
+fn test_vault_rename_updates_backlinks() {
+    let vault = obsidian_mcp::vault::Vault::new(test_config());
+
+    let _ = std::fs::remove_file(test_vault_path().join("_test-bl-source.md"));
+    let _ = std::fs::remove_file(test_vault_path().join("_test-bl-linker.md"));
+    let _ = std::fs::remove_file(test_vault_path().join("_test-bl-renamed.md"));
+
+    vault.create_note("_test-bl-source.md", "Source note", None).unwrap();
+    vault.create_note("_test-bl-linker.md", "Links to [[_test-bl-source]]", None).unwrap();
+
+    vault.rename_note("_test-bl-source.md", "_test-bl-renamed.md").unwrap();
+
+    let linker = vault.read_note("_test-bl-linker.md").unwrap();
+    assert!(linker.body.contains("[[_test-bl-renamed]]"), "Backlink not updated: {}", linker.body);
+    assert!(!linker.body.contains("[[_test-bl-source]]"), "Old link still present");
+
+    let _ = std::fs::remove_file(test_vault_path().join("_test-bl-renamed.md"));
+    let _ = std::fs::remove_file(test_vault_path().join("_test-bl-linker.md"));
+}
+
+#[test]
+fn test_vault_merge_notes() {
+    let vault = obsidian_mcp::vault::Vault::new(test_config());
+
+    let _ = std::fs::remove_file(test_vault_path().join("_test-merge-source.md"));
+    let _ = std::fs::remove_file(test_vault_path().join("_test-merge-dest.md"));
+
+    vault.create_note("_test-merge-source.md", "Content from source", None).unwrap();
+    vault.create_note("_test-merge-dest.md", "Content from dest", None).unwrap();
+
+    let merged = vault.merge_notes("_test-merge-source.md", "_test-merge-dest.md").unwrap();
+    assert!(merged.body.contains("Content from dest"));
+    assert!(merged.body.contains("Content from source"));
+    assert!(merged.body.contains("Merged from _test-merge-source"));
+    assert!(!test_vault_path().join("_test-merge-source.md").exists());
+
+    let _ = std::fs::remove_file(test_vault_path().join("_test-merge-dest.md"));
+}
+
+#[test]
+fn test_vault_bulk_tag() {
+    let vault = obsidian_mcp::vault::Vault::new(test_config());
+
+    let _ = std::fs::remove_file(test_vault_path().join("_test-bt-note.md"));
+
+    vault.create_note("_test-bt-note.md", "bulk-taggable content", None).unwrap();
+
+    let count = vault.bulk_tag("bulk-taggable", &["new-tag".to_string()], &[]).unwrap();
+    assert_eq!(count, 1);
+
+    let note = vault.read_note("_test-bt-note.md").unwrap();
+    assert_eq!(note.frontmatter.get("tags").unwrap(), "new-tag");
+
+    let _ = std::fs::remove_file(test_vault_path().join("_test-bt-note.md"));
+}
+
+#[test]
+fn test_vault_link_related_notes() {
+    let vault = obsidian_mcp::vault::Vault::new(test_config());
+
+    let _ = std::fs::remove_file(test_vault_path().join("_test-lr-main.md"));
+    let _ = std::fs::remove_file(test_vault_path().join("_test-lr-related.md"));
+
+    vault.create_note("_test-lr-main.md",
+        "This note discusses machine learning and artificial intelligence.", None).unwrap();
+    vault.create_note("_test-lr-related.md",
+        "Another note about machine learning topics and artificial intelligence models.", None).unwrap();
+
+    let linked = vault.link_related_notes("_test-lr-main.md").unwrap();
+    assert!(linked.body.contains("## Related"));
+    assert!(linked.body.contains("_test-lr-related"));
+
+    let _ = std::fs::remove_file(test_vault_path().join("_test-lr-main.md"));
+    let _ = std::fs::remove_file(test_vault_path().join("_test-lr-related.md"));
+}
+
+#[test]
 fn test_vault_resolve_links() {
     let vault = obsidian_mcp::vault::Vault::new(test_config());
     let note = vault.read_note("note1.md").unwrap();

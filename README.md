@@ -16,13 +16,18 @@ A high-performance [Model Context Protocol](https://modelcontextprotocol.io) ser
 
 **Write**
 - Create new notes with optional content and frontmatter
+- Create folders within the vault
+- Rename or move notes (automatically updates all `[[wikilinks]]` across the vault)
+- Merge one note into another with heading separators
 - Update existing notes (append or replace content, preserves frontmatter)
 - Set and merge frontmatter fields on any note
+- Bulk-add or remove tags across notes matching a search query
 
 **Link Management**
 - Resolve `[[wikilinks]]` to actual file paths
 - Find all backlinks to a given note
 - Traverse the link graph up to N hops deep
+- Auto-link notes to related content via keyword similarity
 
 **Templates & Daily Notes**
 - List available templates from your vault
@@ -159,8 +164,12 @@ Windows:
 | Tool | Description |
 |---|---|
 | `create_note` | Create a new note with optional content and frontmatter |
+| `create_folder` | Create a new folder in the vault |
+| `rename_note` | Rename or move a note (updates all `[[wikilinks]]` to the old path) |
+| `merge_notes` | Merge source note into destination with heading separator, deletes source |
 | `update_note` | Append or replace note content (preserves frontmatter) |
 | `set_frontmatter` | Set or merge frontmatter fields on a note |
+| `bulk_tag` | Add or remove tags across notes matching a full-text search query |
 
 ### Links
 | Tool | Description |
@@ -168,6 +177,7 @@ Windows:
 | `resolve_links` | Resolve all `[[wikilinks]]` to file paths |
 | `backlinks` | Find all notes that link to a given note |
 | `link_graph` | Traverse outgoing links up to N hops |
+| `link_related_notes` | Find notes related by content similarity and add a `## Related` section |
 
 ### Templates
 | Tool | Description |
@@ -187,7 +197,7 @@ Windows:
 
 ## Security
 
-- **Path traversal protection**: All file paths are validated to stay within the vault directory
+- **Path traversal protection**: All file paths are validated to stay within the vault directory (including folder creation and rename operations)
 - **Frontmatter size limit**: Parsing capped at 8 KB
 - **Template isolation**: Templates confirmed to reside within the templates directory
 - **Listing depth limit**: Recursive listing capped at 20 levels

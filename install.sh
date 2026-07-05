@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPO_OWNER="aryamanw"
-REPO_NAME="obsidian-mcp"
+REPO_NAME="mcp-obsidian"
 REPO="$REPO_OWNER/$REPO_NAME"
 
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
