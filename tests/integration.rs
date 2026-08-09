@@ -372,3 +372,22 @@ fn test_vault_find_orphan_notes() {
 
     let _ = std::fs::remove_file(test_vault_path().join("_test-orphan.md"));
 }
+
+#[test]
+fn test_vault_list_recent_notes() {
+    let vault = obsidian_mcp::vault::Vault::new(test_config());
+    let _ = std::fs::remove_file(test_vault_path().join("_test-recent.md"));
+
+    vault.create_note("_test-recent.md", "Recently created", None).unwrap();
+
+    let recent = vault.list_recent_notes(100).unwrap();
+    assert!(recent.iter().any(|(p, _)| p == "_test-recent.md"));
+    for pair in recent.windows(2) {
+        assert!(pair[0].1 >= pair[1].1, "results not sorted by modified time descending");
+    }
+
+    let limited = vault.list_recent_notes(1).unwrap();
+    assert_eq!(limited.len(), 1);
+
+    let _ = std::fs::remove_file(test_vault_path().join("_test-recent.md"));
+}

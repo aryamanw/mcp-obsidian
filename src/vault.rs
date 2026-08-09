@@ -77,6 +77,27 @@ impl Vault {
         Ok(entries)
     }
 
+    pub fn list_recent_notes(&self, limit: usize) -> anyhow::Result<Vec<(String, std::time::SystemTime)>> {
+        let mut entries: Vec<(String, std::time::SystemTime)> = Vec::new();
+
+        for entry in WalkDir::new(&self.config.vault_path)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "md"))
+        {
+            if let Ok(metadata) = entry.metadata() {
+                if let Ok(modified) = metadata.modified() {
+                    let rel = wikilink::relative_path(entry.path(), &self.config.vault_path);
+                    entries.push((rel, modified));
+                }
+            }
+        }
+
+        entries.sort_by(|a, b| b.1.cmp(&a.1));
+        entries.truncate(limit);
+        Ok(entries)
+    }
+
     pub fn create_folder(&self, folder_path: &str) -> anyhow::Result<()> {
         let vault_canonical = self.config.vault_path.canonicalize()
             .map_err(|_| anyhow::anyhow!("Vault path error"))?;

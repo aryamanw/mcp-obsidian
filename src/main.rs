@@ -96,6 +96,31 @@ impl ObsidianMcp {
         }
     }
 
+    #[tool(description = "List notes sorted by last-modified time, newest first.")]
+    fn list_recent_notes(
+        &self,
+        Parameters(req): Parameters<tools::read::ListRecentNotesRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let limit = req.limit.unwrap_or(20);
+        match self.vault.list_recent_notes(limit) {
+            Ok(notes) => {
+                let results: Vec<serde_json::Value> = notes.iter().map(|(path, modified)| {
+                    let modified: chrono::DateTime<chrono::Utc> = (*modified).into();
+                    serde_json::json!({
+                        "path": path,
+                        "modified": modified.to_rfc3339(),
+                    })
+                }).collect();
+                let result = serde_json::json!({
+                    "notes": results,
+                    "count": results.len(),
+                });
+                Ok(CallToolResult::success(vec![Content::text(result.to_string())]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+        }
+    }
+
     // ===== Search Tools =====
 
     #[tool(description = "Full-text search across the vault. Returns matching notes with snippets.")]

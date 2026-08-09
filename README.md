@@ -152,6 +152,7 @@ Windows:
 | `read_note` | Read a note's content, frontmatter, tags, and resolved links |
 | `list_vault` | List vault structure — folders and notes |
 | `get_metadata` | Get frontmatter, tags, outgoing links, and backlink count |
+| `list_recent_notes` | List notes sorted by last-modified time, newest first |
 
 ### Search
 | Tool | Description |
