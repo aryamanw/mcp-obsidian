@@ -210,6 +210,10 @@ impl Vault {
             return Err(anyhow::anyhow!("Invalid mode: {} (use 'append' or 'replace')", mode));
         }
 
+        if !heading.trim_start().starts_with('#') {
+            return Err(anyhow::anyhow!("Heading must include '#' markers (e.g. '## Tasks')"));
+        }
+
         let full_path = self.resolve_note_path(note_path)?;
         let existing = std::fs::read_to_string(&full_path)?;
         let parsed = frontmatter::parse(&existing);
@@ -220,15 +224,18 @@ impl Vault {
                     .find('\n')
                     .map(|p| section.start + p + 1)
                     .unwrap_or(parsed.body.len());
-                let heading_line = &parsed.body[section.start..heading_line_end];
+                let mut heading_line = parsed.body[section.start..heading_line_end].to_string();
 
                 if mode == "replace" {
+                    if !heading_line.ends_with('\n') {
+                        heading_line.push('\n');
+                    }
                     format!(
-                        "{}{}{}\n{}",
+                        "{}{}{}{}",
                         &parsed.body[..section.start],
                         heading_line,
                         content.trim_end(),
-                        &parsed.body[section.end..]
+                        if parsed.body[section.end..].is_empty() { "\n".to_string() } else { format!("\n{}", &parsed.body[section.end..]) }
                     )
                 } else {
                     let mut section_body = parsed.body[..section.end].to_string();

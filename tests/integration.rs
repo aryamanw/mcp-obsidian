@@ -466,6 +466,13 @@ fn test_vault_update_section_append() {
     assert!(updated.body.contains("- two"));
     assert!(updated.body.contains("Unrelated."));
 
+    // Verify byte ordering: content added before the next section
+    let pos_one = updated.body.find("- one").expect("- one not found");
+    let pos_two = updated.body.find("- two").expect("- two not found");
+    let pos_notes = updated.body.find("## Notes").expect("## Notes not found");
+    assert!(pos_one < pos_two, "- one should come before - two");
+    assert!(pos_two < pos_notes, "- two should come before ## Notes section");
+
     let _ = std::fs::remove_file(test_vault_path().join("_test-update-section-append.md"));
 }
 
@@ -501,6 +508,15 @@ fn test_vault_update_section_preserves_nested_subheadings() {
     assert!(updated.body.contains("- appended"));
     assert!(updated.body.contains("## Notes"));
 
+    // Verify byte ordering: appended content is inside Tasks section before next heading
+    let pos_subtask = updated.body.find("### Subtask").expect("### Subtask not found");
+    let pos_detail = updated.body.find("Detail.").expect("Detail. not found");
+    let pos_appended = updated.body.find("- appended").expect("- appended not found");
+    let pos_notes = updated.body.find("## Notes").expect("## Notes not found");
+    assert!(pos_subtask < pos_detail, "### Subtask should come before Detail.");
+    assert!(pos_detail < pos_appended, "Detail. should come before - appended");
+    assert!(pos_appended < pos_notes, "- appended should come before ## Notes section");
+
     let _ = std::fs::remove_file(test_vault_path().join("_test-update-section-nested.md"));
 }
 
@@ -515,4 +531,38 @@ fn test_vault_update_section_invalid_mode() {
     assert!(err.to_string().contains("Invalid mode"));
 
     let _ = std::fs::remove_file(test_vault_path().join("_test-update-section-mode.md"));
+}
+
+#[test]
+fn test_vault_update_section_replace_no_trailing_newline() {
+    let vault = obsidian_mcp::vault::Vault::new(test_config());
+    let _ = std::fs::remove_file(test_vault_path().join("_test-update-section-replace-eof.md"));
+
+    vault.create_note("_test-update-section-replace-eof.md", "## Tasks", None).unwrap();
+
+    let updated = vault.update_section("_test-update-section-replace-eof.md", "## Tasks", "- new", "replace").unwrap();
+    assert!(updated.body.contains("## Tasks"));
+    assert!(updated.body.contains("- new"));
+    // Verify they are on separate lines (not corrupted concatenation)
+    assert!(!updated.body.contains("## Tasksnew"));
+    assert!(!updated.body.contains("## Tasks- new"));
+    // Check byte ordering
+    let pos_heading = updated.body.find("## Tasks").expect("## Tasks not found");
+    let pos_content = updated.body.find("- new").expect("- new not found");
+    assert!(pos_heading < pos_content, "heading should come before content");
+
+    let _ = std::fs::remove_file(test_vault_path().join("_test-update-section-replace-eof.md"));
+}
+
+#[test]
+fn test_vault_update_section_invalid_heading_format() {
+    let vault = obsidian_mcp::vault::Vault::new(test_config());
+    let _ = std::fs::remove_file(test_vault_path().join("_test-update-section-no-hash.md"));
+
+    vault.create_note("_test-update-section-no-hash.md", "# Title\n\nBody.\n", None).unwrap();
+
+    let err = vault.update_section("_test-update-section-no-hash.md", "Tasks", "content", "append").unwrap_err();
+    assert!(err.to_string().contains("#"));
+
+    let _ = std::fs::remove_file(test_vault_path().join("_test-update-section-no-hash.md"));
 }
