@@ -430,3 +430,89 @@ fn test_vault_get_section_ambiguous() {
 
     let _ = std::fs::remove_file(test_vault_path().join("_test-get-section-ambig.md"));
 }
+
+#[test]
+fn test_vault_update_section_replace() {
+    let vault = obsidian_mcp::vault::Vault::new(test_config());
+    let _ = std::fs::remove_file(test_vault_path().join("_test-update-section.md"));
+
+    vault.create_note(
+        "_test-update-section.md",
+        "# Title\n\n## Tasks\n\n- old\n\n## Notes\n\nUnrelated.\n",
+        None,
+    ).unwrap();
+
+    let updated = vault.update_section("_test-update-section.md", "## Tasks", "- new", "replace").unwrap();
+    assert!(updated.body.contains("- new"));
+    assert!(!updated.body.contains("- old"));
+    assert!(updated.body.contains("Unrelated."));
+
+    let _ = std::fs::remove_file(test_vault_path().join("_test-update-section.md"));
+}
+
+#[test]
+fn test_vault_update_section_append() {
+    let vault = obsidian_mcp::vault::Vault::new(test_config());
+    let _ = std::fs::remove_file(test_vault_path().join("_test-update-section-append.md"));
+
+    vault.create_note(
+        "_test-update-section-append.md",
+        "## Tasks\n\n- one\n\n## Notes\n\nUnrelated.\n",
+        None,
+    ).unwrap();
+
+    let updated = vault.update_section("_test-update-section-append.md", "## Tasks", "- two", "append").unwrap();
+    assert!(updated.body.contains("- one"));
+    assert!(updated.body.contains("- two"));
+    assert!(updated.body.contains("Unrelated."));
+
+    let _ = std::fs::remove_file(test_vault_path().join("_test-update-section-append.md"));
+}
+
+#[test]
+fn test_vault_update_section_creates_missing_heading() {
+    let vault = obsidian_mcp::vault::Vault::new(test_config());
+    let _ = std::fs::remove_file(test_vault_path().join("_test-update-section-missing.md"));
+
+    vault.create_note("_test-update-section-missing.md", "# Title\n\nBody text.\n", None).unwrap();
+
+    let updated = vault.update_section("_test-update-section-missing.md", "## Tasks", "- new task", "append").unwrap();
+    assert!(updated.body.contains("## Tasks"));
+    assert!(updated.body.contains("- new task"));
+    assert!(updated.body.contains("Body text."));
+
+    let _ = std::fs::remove_file(test_vault_path().join("_test-update-section-missing.md"));
+}
+
+#[test]
+fn test_vault_update_section_preserves_nested_subheadings() {
+    let vault = obsidian_mcp::vault::Vault::new(test_config());
+    let _ = std::fs::remove_file(test_vault_path().join("_test-update-section-nested.md"));
+
+    vault.create_note(
+        "_test-update-section-nested.md",
+        "## Tasks\n\n### Subtask\n\nDetail.\n\n## Notes\n\nOther.\n",
+        None,
+    ).unwrap();
+
+    let updated = vault.update_section("_test-update-section-nested.md", "## Tasks", "- appended", "append").unwrap();
+    assert!(updated.body.contains("### Subtask"));
+    assert!(updated.body.contains("Detail."));
+    assert!(updated.body.contains("- appended"));
+    assert!(updated.body.contains("## Notes"));
+
+    let _ = std::fs::remove_file(test_vault_path().join("_test-update-section-nested.md"));
+}
+
+#[test]
+fn test_vault_update_section_invalid_mode() {
+    let vault = obsidian_mcp::vault::Vault::new(test_config());
+    let _ = std::fs::remove_file(test_vault_path().join("_test-update-section-mode.md"));
+
+    vault.create_note("_test-update-section-mode.md", "## Tasks\n\n- one\n", None).unwrap();
+
+    let err = vault.update_section("_test-update-section-mode.md", "## Tasks", "x", "bogus").unwrap_err();
+    assert!(err.to_string().contains("Invalid mode"));
+
+    let _ = std::fs::remove_file(test_vault_path().join("_test-update-section-mode.md"));
+}

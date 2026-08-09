@@ -379,6 +379,24 @@ impl ObsidianMcp {
         }
     }
 
+    #[tool(description = "Update just one section of a note, addressed by heading (e.g. '## Tasks'). Creates the section at the end of the note if the heading doesn't exist yet. Use 'append' to add to the section or 'replace' to overwrite it.")]
+    fn update_section(
+        &self,
+        Parameters(req): Parameters<tools::write::UpdateSectionRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        match self.vault.update_section(&req.path, &req.heading, &req.content, &req.mode) {
+            Ok(note) => {
+                let result = serde_json::json!({
+                    "path": note.path,
+                    "heading": req.heading,
+                    "message": "Section updated successfully",
+                });
+                Ok(CallToolResult::success(vec![Content::text(result.to_string())]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+        }
+    }
+
     // ===== Link Tools =====
 
     #[tool(description = "Resolve all [[wikilinks]] in a note to their actual file paths.")]

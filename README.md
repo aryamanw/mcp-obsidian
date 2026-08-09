@@ -173,6 +173,7 @@ Windows:
 | `update_note` | Append or replace note content (preserves frontmatter) |
 | `set_frontmatter` | Set or merge frontmatter fields on a note |
 | `bulk_tag` | Add or remove tags across notes matching a full-text search query |
+| `update_section` | Append to or replace a single section of a note by heading |
 
 ### Links
 | Tool | Description |

@@ -205,6 +205,68 @@ impl Vault {
         self.read_note(note_path)
     }
 
+    pub fn update_section(&self, note_path: &str, heading: &str, content: &str, mode: &str) -> anyhow::Result<NoteInfo> {
+        if mode != "append" && mode != "replace" {
+            return Err(anyhow::anyhow!("Invalid mode: {} (use 'append' or 'replace')", mode));
+        }
+
+        let full_path = self.resolve_note_path(note_path)?;
+        let existing = std::fs::read_to_string(&full_path)?;
+        let parsed = frontmatter::parse(&existing);
+
+        let new_body = match sections::find_section(&parsed.body, heading) {
+            Ok(section) => {
+                let heading_line_end = parsed.body[section.start..]
+                    .find('\n')
+                    .map(|p| section.start + p + 1)
+                    .unwrap_or(parsed.body.len());
+                let heading_line = &parsed.body[section.start..heading_line_end];
+
+                if mode == "replace" {
+                    format!(
+                        "{}{}{}\n{}",
+                        &parsed.body[..section.start],
+                        heading_line,
+                        content.trim_end(),
+                        &parsed.body[section.end..]
+                    )
+                } else {
+                    let mut section_body = parsed.body[..section.end].to_string();
+                    if !section_body.ends_with('\n') {
+                        section_body.push('\n');
+                    }
+                    section_body.push_str(content.trim_end());
+                    section_body.push('\n');
+                    format!("{}{}", section_body, &parsed.body[section.end..])
+                }
+            }
+            Err(sections::SectionError::NotFound) => {
+                let mut body = parsed.body.trim_end().to_string();
+                body.push_str("\n\n");
+                body.push_str(heading.trim());
+                body.push('\n');
+                body.push_str(content.trim_end());
+                body.push('\n');
+                body
+            }
+            Err(sections::SectionError::Ambiguous(n)) => {
+                return Err(anyhow::anyhow!(
+                    "Heading '{}' matches {} sections; ambiguous", heading, n
+                ));
+            }
+        };
+
+        let fm_str = serialize_frontmatter(&parsed.frontmatter);
+        let final_content = if parsed.frontmatter.is_empty() {
+            new_body
+        } else {
+            format!("---\n{}---\n{}", fm_str, new_body)
+        };
+
+        std::fs::write(&full_path, &final_content)?;
+        self.read_note(note_path)
+    }
+
     pub fn search_notes(&self, query: &str, limit: usize) -> anyhow::Result<Vec<NoteInfo>> {
         let query_lower = query.to_lowercase();
         let mut results = Vec::new();
