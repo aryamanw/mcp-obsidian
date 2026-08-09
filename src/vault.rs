@@ -537,6 +537,32 @@ impl Vault {
         self.read_note(&dest_rel)
     }
 
+    pub fn trash_note(&self, note_path: &str) -> anyhow::Result<()> {
+        let full_path = self.resolve_note_path(note_path)?;
+
+        let trash_dir = self.config.vault_path.join(".trash");
+        std::fs::create_dir_all(&trash_dir)?;
+
+        let file_name = full_path.file_name()
+            .ok_or_else(|| anyhow::anyhow!("Invalid path"))?
+            .to_string_lossy()
+            .to_string();
+        let stem = full_path.file_stem().and_then(|s| s.to_str()).unwrap_or("note").to_string();
+        let ext = full_path.extension().and_then(|s| s.to_str())
+            .map(|s| format!(".{}", s))
+            .unwrap_or_default();
+
+        let mut dest = trash_dir.join(&file_name);
+        let mut counter = 1;
+        while dest.exists() {
+            dest = trash_dir.join(format!("{} ({}){}", stem, counter, ext));
+            counter += 1;
+        }
+
+        std::fs::rename(&full_path, &dest)?;
+        Ok(())
+    }
+
     pub fn bulk_tag(&self, query: &str, add_tags: &[String], remove_tags: &[String]) -> anyhow::Result<usize> {
         let notes = self.search_notes(query, 1000)?;
         let mut count = 0;

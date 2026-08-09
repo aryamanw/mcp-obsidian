@@ -174,6 +174,7 @@ Windows:
 | `set_frontmatter` | Set or merge frontmatter fields on a note |
 | `bulk_tag` | Add or remove tags across notes matching a full-text search query |
 | `update_section` | Append to or replace a single section of a note by heading |
+| `trash_note` | Move a note to the vault's `.trash` folder instead of deleting it |
 
 ### Links
 | Tool | Description |
@@ -207,6 +208,7 @@ Windows:
 - **Frontmatter size limit**: Parsing capped at 8 KB
 - **Template isolation**: Templates confirmed to reside within the templates directory
 - **Listing depth limit**: Recursive listing capped at 20 levels
+- **Trash, not delete**: `trash_note` moves notes into a vault-local `.trash/` folder rather than deleting them; that folder is still a normal, visible part of the vault to other tools (e.g. `list_vault`, `search_notes`)
 
 ## Building from Source
 

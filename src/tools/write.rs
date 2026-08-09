@@ -79,3 +79,9 @@ pub struct UpdateSectionRequest {
     #[schemars(description = "'append' to add to the end of the section, 'replace' to overwrite it")]
     pub mode: String,
 }
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct TrashNoteRequest {
+    #[schemars(description = "Path to the note to move to .trash")]
+    pub path: String,
+}

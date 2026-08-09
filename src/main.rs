@@ -397,6 +397,23 @@ impl ObsidianMcp {
         }
     }
 
+    #[tool(description = "Move a note to the vault's .trash folder instead of deleting it. Collisions in .trash get a numeric suffix.")]
+    fn trash_note(
+        &self,
+        Parameters(req): Parameters<tools::write::TrashNoteRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        match self.vault.trash_note(&req.path) {
+            Ok(()) => {
+                let result = serde_json::json!({
+                    "path": req.path,
+                    "message": "Note moved to .trash",
+                });
+                Ok(CallToolResult::success(vec![Content::text(result.to_string())]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+        }
+    }
+
     // ===== Link Tools =====
 
     #[tool(description = "Resolve all [[wikilinks]] in a note to their actual file paths.")]

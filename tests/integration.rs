@@ -566,3 +566,40 @@ fn test_vault_update_section_invalid_heading_format() {
 
     let _ = std::fs::remove_file(test_vault_path().join("_test-update-section-no-hash.md"));
 }
+
+#[test]
+fn test_vault_trash_note() {
+    let vault = obsidian_mcp::vault::Vault::new(test_config());
+    let trash_dir = test_vault_path().join(".trash");
+    let _ = std::fs::remove_file(test_vault_path().join("_test-trash.md"));
+    let _ = std::fs::remove_file(trash_dir.join("_test-trash.md"));
+
+    vault.create_note("_test-trash.md", "To be trashed", None).unwrap();
+    vault.trash_note("_test-trash.md").unwrap();
+
+    assert!(!test_vault_path().join("_test-trash.md").exists());
+    assert!(trash_dir.join("_test-trash.md").exists());
+
+    let _ = std::fs::remove_file(trash_dir.join("_test-trash.md"));
+}
+
+#[test]
+fn test_vault_trash_note_collision() {
+    let vault = obsidian_mcp::vault::Vault::new(test_config());
+    let trash_dir = test_vault_path().join(".trash");
+    let _ = std::fs::remove_file(test_vault_path().join("_test-trash-collide.md"));
+    let _ = std::fs::remove_file(trash_dir.join("_test-trash-collide.md"));
+    let _ = std::fs::remove_file(trash_dir.join("_test-trash-collide (1).md"));
+
+    vault.create_note("_test-trash-collide.md", "First", None).unwrap();
+    vault.trash_note("_test-trash-collide.md").unwrap();
+
+    vault.create_note("_test-trash-collide.md", "Second", None).unwrap();
+    vault.trash_note("_test-trash-collide.md").unwrap();
+
+    assert!(trash_dir.join("_test-trash-collide.md").exists());
+    assert!(trash_dir.join("_test-trash-collide (1).md").exists());
+
+    let _ = std::fs::remove_file(trash_dir.join("_test-trash-collide.md"));
+    let _ = std::fs::remove_file(trash_dir.join("_test-trash-collide (1).md"));
+}
