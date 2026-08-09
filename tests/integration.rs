@@ -284,3 +284,54 @@ fn test_vault_resolve_links() {
         assert!(resolved.is_some(), "Failed to resolve link: {}", link);
     }
 }
+
+#[test]
+fn test_find_section_basic() {
+    let body = "# Title\n\n## Tasks\n\n- one\n- two\n\n## Notes\n\nSome notes.\n";
+    let section = obsidian_mcp::parse::sections::find_section(body, "## Tasks").unwrap();
+    let text = &body[section.start..section.end];
+    assert!(text.contains("- one"));
+    assert!(text.contains("- two"));
+    assert!(!text.contains("Some notes"));
+}
+
+#[test]
+fn test_find_section_not_found() {
+    let body = "# Title\n\n## Tasks\n\nContent.\n";
+    let err = obsidian_mcp::parse::sections::find_section(body, "## Nonexistent").unwrap_err();
+    assert_eq!(err, obsidian_mcp::parse::sections::SectionError::NotFound);
+}
+
+#[test]
+fn test_find_section_ambiguous() {
+    let body = "## Notes\n\nFirst.\n\n## Other\n\nMiddle.\n\n## Notes\n\nSecond.\n";
+    let err = obsidian_mcp::parse::sections::find_section(body, "## Notes").unwrap_err();
+    assert_eq!(err, obsidian_mcp::parse::sections::SectionError::Ambiguous(2));
+}
+
+#[test]
+fn test_find_section_nested_subheadings_included() {
+    let body = "## Tasks\n\n### Subtask A\n\nDetail.\n\n## Notes\n\nOther.\n";
+    let section = obsidian_mcp::parse::sections::find_section(body, "## Tasks").unwrap();
+    let text = &body[section.start..section.end];
+    assert!(text.contains("### Subtask A"));
+    assert!(text.contains("Detail."));
+    assert!(!text.contains("## Notes"));
+}
+
+#[test]
+fn test_find_section_end_of_document() {
+    let body = "# Title\n\n## Tasks\n\nOnly section, runs to EOF.\n";
+    let section = obsidian_mcp::parse::sections::find_section(body, "## Tasks").unwrap();
+    assert_eq!(section.end, body.len());
+}
+
+#[test]
+fn test_find_section_ignores_hashtag_without_space() {
+    // A line starting with '#project' (no space) is an inline Obsidian tag,
+    // not a heading, and must not be mistaken for a level-1 heading with
+    // text "project".
+    let body = "#project\n\n## Tasks\n\nContent.\n";
+    let err = obsidian_mcp::parse::sections::find_section(body, "# project").unwrap_err();
+    assert_eq!(err, obsidian_mcp::parse::sections::SectionError::NotFound);
+}
