@@ -443,6 +443,26 @@ impl ObsidianMcp {
         )]))
     }
 
+    #[tool(description = "Find all [[wikilinks]] across the vault that don't resolve to an existing note.")]
+    fn find_broken_links(
+        &self,
+        Parameters(_req): Parameters<tools::links::FindBrokenLinksRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        match self.vault.find_broken_links() {
+            Ok(broken) => {
+                let results: Vec<serde_json::Value> = broken.iter().map(|b| {
+                    serde_json::json!({ "source": b.source, "target": b.target })
+                }).collect();
+                let result = serde_json::json!({
+                    "broken_links": results,
+                    "count": results.len(),
+                });
+                Ok(CallToolResult::success(vec![Content::text(result.to_string())]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+        }
+    }
+
     // ===== Template Tools =====
 
     #[tool(description = "List available templates in the vault's templates folder.")]

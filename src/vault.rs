@@ -13,6 +13,12 @@ pub struct NoteInfo {
     pub links: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct BrokenLink {
+    pub source: String,
+    pub target: String,
+}
+
 pub struct Vault {
     pub config: Config,
 }
@@ -284,6 +290,30 @@ impl Vault {
         }
 
         Ok(backlinking_notes)
+    }
+
+    pub fn find_broken_links(&self) -> anyhow::Result<Vec<BrokenLink>> {
+        let mut broken = Vec::new();
+
+        for entry in WalkDir::new(&self.config.vault_path)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "md"))
+        {
+            if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                let source = wikilink::relative_path(entry.path(), &self.config.vault_path);
+                for link in wikilink::extract_wikilinks(&content) {
+                    if wikilink::resolve_wikilink(&link.target, &self.config.vault_path).is_none() {
+                        broken.push(BrokenLink {
+                            source: source.clone(),
+                            target: link.target,
+                        });
+                    }
+                }
+            }
+        }
+
+        Ok(broken)
     }
 
     pub fn rename_note(&self, source: &str, dest: &str) -> anyhow::Result<NoteInfo> {

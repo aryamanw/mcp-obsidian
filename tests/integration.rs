@@ -349,3 +349,12 @@ fn test_vault_list_tags() {
         .expect("expected 'test' tag to be present");
     assert!(test_tag.1 >= 2);
 }
+
+#[test]
+fn test_vault_find_broken_links() {
+    let vault = obsidian_mcp::vault::Vault::new(test_config());
+    let broken = vault.find_broken_links().unwrap();
+
+    assert!(broken.iter().any(|b| b.source.contains("note3") && b.target == "nonexistent"));
+    assert!(!broken.iter().any(|b| b.target == "note1"));
+}
