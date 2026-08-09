@@ -121,6 +121,24 @@ impl ObsidianMcp {
         }
     }
 
+    #[tool(description = "Get the text under a heading in a note (e.g. '## Tasks'), up to the next heading of equal or higher level.")]
+    fn get_section(
+        &self,
+        Parameters(req): Parameters<tools::read::GetSectionRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        match self.vault.get_section(&req.path, &req.heading) {
+            Ok(section) => {
+                let result = serde_json::json!({
+                    "path": req.path,
+                    "heading": req.heading,
+                    "content": section,
+                });
+                Ok(CallToolResult::success(vec![Content::text(result.to_string())]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+        }
+    }
+
     // ===== Search Tools =====
 
     #[tool(description = "Full-text search across the vault. Returns matching notes with snippets.")]

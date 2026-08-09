@@ -26,3 +26,11 @@ pub struct ListRecentNotesRequest {
     #[schemars(description = "Max notes to return (optional, defaults to 20)")]
     pub limit: Option<usize>,
 }
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GetSectionRequest {
+    #[schemars(description = "Path to the note")]
+    pub path: String,
+    #[schemars(description = "Heading to read, including its '#' markers (e.g. '## Tasks')")]
+    pub heading: String,
+}

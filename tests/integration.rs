@@ -391,3 +391,42 @@ fn test_vault_list_recent_notes() {
 
     let _ = std::fs::remove_file(test_vault_path().join("_test-recent.md"));
 }
+
+#[test]
+fn test_vault_get_section() {
+    let vault = obsidian_mcp::vault::Vault::new(test_config());
+    let _ = std::fs::remove_file(test_vault_path().join("_test-get-section.md"));
+
+    vault.create_note(
+        "_test-get-section.md",
+        "# Title\n\n## Tasks\n\n- one\n- two\n\n## Notes\n\nSome notes.\n",
+        None,
+    ).unwrap();
+
+    let section = vault.get_section("_test-get-section.md", "## Tasks").unwrap();
+    assert!(section.contains("- one"));
+    assert!(section.contains("- two"));
+    assert!(!section.contains("Some notes"));
+
+    let missing = vault.get_section("_test-get-section.md", "## Nonexistent");
+    assert!(missing.is_err());
+
+    let _ = std::fs::remove_file(test_vault_path().join("_test-get-section.md"));
+}
+
+#[test]
+fn test_vault_get_section_ambiguous() {
+    let vault = obsidian_mcp::vault::Vault::new(test_config());
+    let _ = std::fs::remove_file(test_vault_path().join("_test-get-section-ambig.md"));
+
+    vault.create_note(
+        "_test-get-section-ambig.md",
+        "## Notes\n\nFirst.\n\n## Other\n\nMiddle.\n\n## Notes\n\nSecond.\n",
+        None,
+    ).unwrap();
+
+    let err = vault.get_section("_test-get-section-ambig.md", "## Notes").unwrap_err();
+    assert!(err.to_string().contains("ambiguous"));
+
+    let _ = std::fs::remove_file(test_vault_path().join("_test-get-section-ambig.md"));
+}

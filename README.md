@@ -153,6 +153,7 @@ Windows:
 | `list_vault` | List vault structure — folders and notes |
 | `get_metadata` | Get frontmatter, tags, outgoing links, and backlink count |
 | `list_recent_notes` | List notes sorted by last-modified time, newest first |
+| `get_section` | Read a single section of a note by heading (e.g. '## Tasks') |
 
 ### Search
 | Tool | Description |

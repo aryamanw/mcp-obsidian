@@ -1,5 +1,5 @@
 use crate::config::Config;
-use crate::parse::{frontmatter, wikilink, tags};
+use crate::parse::{frontmatter, wikilink, tags, sections};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
@@ -44,6 +44,22 @@ impl Vault {
             tags: note_tags,
             links: note_links,
         })
+    }
+
+    pub fn get_section(&self, note_path: &str, heading: &str) -> anyhow::Result<String> {
+        let full_path = self.resolve_note_path(note_path)?;
+        let content = std::fs::read_to_string(&full_path)?;
+        let parsed = frontmatter::parse(&content);
+
+        match sections::find_section(&parsed.body, heading) {
+            Ok(section) => Ok(parsed.body[section.start..section.end].trim_end().to_string()),
+            Err(sections::SectionError::NotFound) => {
+                Err(anyhow::anyhow!("Section '{}' not found", heading))
+            }
+            Err(sections::SectionError::Ambiguous(n)) => Err(anyhow::anyhow!(
+                "Heading '{}' matches {} sections; ambiguous", heading, n
+            )),
+        }
     }
 
     pub fn list_vault(&self, subpath: Option<&str>, depth: Option<usize>) -> anyhow::Result<Vec<String>> {
