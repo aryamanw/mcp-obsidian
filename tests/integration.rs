@@ -358,3 +358,17 @@ fn test_vault_find_broken_links() {
     assert!(broken.iter().any(|b| b.source.contains("note3") && b.target == "nonexistent"));
     assert!(!broken.iter().any(|b| b.target == "note1"));
 }
+
+#[test]
+fn test_vault_find_orphan_notes() {
+    let vault = obsidian_mcp::vault::Vault::new(test_config());
+    let _ = std::fs::remove_file(test_vault_path().join("_test-orphan.md"));
+
+    vault.create_note("_test-orphan.md", "Nothing links here.", None).unwrap();
+
+    let orphans = vault.find_orphan_notes().unwrap();
+    assert!(orphans.iter().any(|o| o.contains("_test-orphan")));
+    assert!(!orphans.iter().any(|o| o == "note1.md"));
+
+    let _ = std::fs::remove_file(test_vault_path().join("_test-orphan.md"));
+}

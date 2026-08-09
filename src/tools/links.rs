@@ -23,3 +23,6 @@ pub struct LinkGraphRequest {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct FindBrokenLinksRequest {}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct FindOrphanNotesRequest {}

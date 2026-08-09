@@ -463,6 +463,23 @@ impl ObsidianMcp {
         }
     }
 
+    #[tool(description = "Find notes with no backlinks — nothing else in the vault links to them.")]
+    fn find_orphan_notes(
+        &self,
+        Parameters(_req): Parameters<tools::links::FindOrphanNotesRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        match self.vault.find_orphan_notes() {
+            Ok(orphans) => {
+                let result = serde_json::json!({
+                    "orphans": orphans,
+                    "count": orphans.len(),
+                });
+                Ok(CallToolResult::success(vec![Content::text(result.to_string())]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+        }
+    }
+
     // ===== Template Tools =====
 
     #[tool(description = "List available templates in the vault's templates folder.")]

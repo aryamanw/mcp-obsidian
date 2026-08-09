@@ -1,6 +1,6 @@
 use crate::config::Config;
 use crate::parse::{frontmatter, wikilink, tags};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
@@ -314,6 +314,43 @@ impl Vault {
         }
 
         Ok(broken)
+    }
+
+    pub fn find_orphan_notes(&self) -> anyhow::Result<Vec<String>> {
+        let mut linked_stems: HashSet<String> = HashSet::new();
+        let mut all_notes: Vec<String> = Vec::new();
+
+        for entry in WalkDir::new(&self.config.vault_path)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "md"))
+        {
+            let rel = wikilink::relative_path(entry.path(), &self.config.vault_path);
+            all_notes.push(rel);
+
+            if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                for link in wikilink::extract_wikilinks(&content) {
+                    let stem = Path::new(&link.target)
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or(&link.target)
+                        .to_string();
+                    linked_stems.insert(stem);
+                }
+            }
+        }
+
+        // "Orphan" here means no incoming links, regardless of whether the
+        // note itself links out — matching backlinks()'s own file-stem
+        // comparison, not full-path comparison.
+        let orphans = all_notes.into_iter()
+            .filter(|rel| {
+                let stem = Path::new(rel).file_stem().and_then(|s| s.to_str()).unwrap_or(rel);
+                !linked_stems.contains(stem)
+            })
+            .collect();
+
+        Ok(orphans)
     }
 
     pub fn rename_note(&self, source: &str, dest: &str) -> anyhow::Result<NoteInfo> {

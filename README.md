@@ -180,6 +180,7 @@ Windows:
 | `link_graph` | Traverse outgoing links up to N hops |
 | `link_related_notes` | Find notes related by content similarity and add a `## Related` section |
 | `find_broken_links` | Find `[[wikilinks]]` that don't resolve to an existing note |
+| `find_orphan_notes` | Find notes with no backlinks (nothing links to them) |
 
 ### Templates
 | Tool | Description |
