@@ -170,6 +170,26 @@ impl ObsidianMcp {
         }
     }
 
+    #[tool(description = "List all tags used across the vault, each with a usage count (number of notes containing it).")]
+    fn list_tags(
+        &self,
+        Parameters(_req): Parameters<tools::search::ListTagsRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        match self.vault.list_tags() {
+            Ok(tags) => {
+                let results: Vec<serde_json::Value> = tags.iter().map(|(tag, count)| {
+                    serde_json::json!({ "tag": tag, "count": count })
+                }).collect();
+                let result = serde_json::json!({
+                    "tags": results,
+                    "count": results.len(),
+                });
+                Ok(CallToolResult::success(vec![Content::text(result.to_string())]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+        }
+    }
+
     // ===== Write Tools =====
 
     #[tool(description = "Create a new folder in the vault.")]

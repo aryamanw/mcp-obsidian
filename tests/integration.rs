@@ -335,3 +335,17 @@ fn test_find_section_ignores_hashtag_without_space() {
     let err = obsidian_mcp::parse::sections::find_section(body, "# project").unwrap_err();
     assert_eq!(err, obsidian_mcp::parse::sections::SectionError::NotFound);
 }
+
+#[test]
+fn test_vault_list_tags() {
+    let vault = obsidian_mcp::vault::Vault::new(test_config());
+    let tags = vault.list_tags().unwrap();
+
+    let project = tags.iter().find(|(t, _)| t == "project")
+        .expect("expected 'project' tag to be present");
+    assert!(project.1 >= 1);
+
+    let test_tag = tags.iter().find(|(t, _)| t == "test")
+        .expect("expected 'test' tag to be present");
+    assert!(test_tag.1 >= 2);
+}

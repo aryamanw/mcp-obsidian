@@ -240,6 +240,29 @@ impl Vault {
         Ok(results)
     }
 
+    pub fn list_tags(&self) -> anyhow::Result<Vec<(String, usize)>> {
+        let mut counts: HashMap<String, usize> = HashMap::new();
+
+        for entry in WalkDir::new(&self.config.vault_path)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "md"))
+        {
+            if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                let parsed = frontmatter::parse(&content);
+                for tag in tags::all_tags(&content, &parsed.frontmatter) {
+                    *counts.entry(tag).or_insert(0) += 1;
+                }
+            }
+        }
+
+        // Sorted by count descending, then alphabetically for ties — same
+        // tie-break convention as extract_significant_words below.
+        let mut result: Vec<(String, usize)> = counts.into_iter().collect();
+        result.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        Ok(result)
+    }
+
     pub fn backlinks(&self, note_path: &str) -> anyhow::Result<Vec<String>> {
         let target_stem = Path::new(note_path).file_stem()
             .and_then(|s| s.to_str())

@@ -23,3 +23,6 @@ pub struct SearchByFrontmatterRequest {
     #[schemars(description = "Frontmatter filters as key-value pairs (e.g. {\"status\": \"done\"})")]
     pub filters: HashMap<String, String>,
 }
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ListTagsRequest {}

@@ -159,6 +159,7 @@ Windows:
 | `search_notes` | Full-text search with preview snippets |
 | `search_by_tag` | Find notes by tags (OR or AND mode) |
 | `search_by_frontmatter` | Filter notes by frontmatter key-value pairs |
+| `list_tags` | List all tags used in the vault, each with a usage count |
 
 ### Write
 | Tool | Description |
