@@ -284,3 +284,128 @@ fn test_vault_resolve_links() {
         assert!(resolved.is_some(), "Failed to resolve link: {}", link);
     }
 }
+
+#[test]
+fn test_search_by_tag_ignores_hash_prefix() {
+    let vault = obsidian_mcp::vault::Vault::new(test_config());
+    let results = vault.search_by_tag(&["#project".to_string()], "any").unwrap();
+    assert!(results.iter().any(|n| n.path.contains("note1")));
+}
+
+#[test]
+fn test_search_by_tag_case_insensitive() {
+    let vault = obsidian_mcp::vault::Vault::new(test_config());
+    let results = vault.search_by_tag(&["Project".to_string()], "any").unwrap();
+    assert!(results.iter().any(|n| n.path.contains("note1")));
+}
+
+#[test]
+fn test_bulk_tag_remove_is_case_insensitive() {
+    let vault = obsidian_mcp::vault::Vault::new(test_config());
+    let _ = std::fs::remove_file(test_vault_path().join("_test-bt-case-note.md"));
+
+    vault.create_note("_test-bt-case-note.md", "bt-case-taggable content", None).unwrap();
+    vault.bulk_tag("bt-case-taggable", &["Project".to_string()], &[]).unwrap();
+    vault.bulk_tag("bt-case-taggable", &[], &["project".to_string()]).unwrap();
+
+    let note = vault.read_note("_test-bt-case-note.md").unwrap();
+    assert!(note.frontmatter.get("tags").map_or(true, |t| t.is_empty()));
+
+    let _ = std::fs::remove_file(test_vault_path().join("_test-bt-case-note.md"));
+}
+
+#[test]
+fn test_link_related_notes_finds_less_common_keyword() {
+    let vault = obsidian_mcp::vault::Vault::new(test_config());
+    let _ = std::fs::remove_file(test_vault_path().join("_repro-main.md"));
+    let _ = std::fs::remove_file(test_vault_path().join("_repro-related.md"));
+
+    // 10 filler words a-j (each mentioned once) sort alphabetically before
+    // the real topical keyword "zephyr" (mentioned repeatedly, as a note's
+    // actual subject would be), which previously got truncated out of
+    // significance ranking purely by alphabetical bad luck before overlap
+    // scoring ever ran.
+    let filler = "apple banana cherry dolphin eagle falcon giraffe hedgehog iguana jellyfish";
+    vault.create_note("_repro-main.md",
+        &format!("{} zephyr. Zephyr is the topic. This note is about zephyr.", filler), None).unwrap();
+    vault.create_note("_repro-related.md",
+        "This note is entirely about zephyr and nothing else relevant.", None).unwrap();
+
+    let linked = vault.link_related_notes("_repro-main.md").unwrap();
+    assert!(linked.body.contains("## Related"));
+    assert!(linked.body.contains("_repro-related"));
+
+    let _ = std::fs::remove_file(test_vault_path().join("_repro-main.md"));
+    let _ = std::fs::remove_file(test_vault_path().join("_repro-related.md"));
+}
+
+// --- Tag extraction correctness (false positives from non-tag '#' usage) ---
+
+#[test]
+fn test_tag_extraction_ignores_wikilink_heading_refs() {
+    let content = "See [[Project Plan#Milestones]] for details.";
+    let tags = obsidian_mcp::parse::tags::extract_tags(content);
+    assert!(!tags.contains("Milestones"), "wikilink heading ref falsely extracted as tag: {:?}", tags);
+}
+
+#[test]
+fn test_tag_extraction_ignores_url_anchors() {
+    let content = "Source: https://example.com/page#section-two";
+    let tags = obsidian_mcp::parse::tags::extract_tags(content);
+    assert!(!tags.contains("section-two"), "URL anchor falsely extracted as tag: {:?}", tags);
+}
+
+#[test]
+fn test_tag_extraction_ignores_code_blocks() {
+    let content = "Inline `#ffffff` color and:\n```\n#include <stdio.h>\n```\nreal #tag here.";
+    let tags = obsidian_mcp::parse::tags::extract_tags(content);
+    assert!(!tags.contains("ffffff"), "inline code hash falsely extracted as tag: {:?}", tags);
+    assert!(!tags.contains("include"), "fenced code hash falsely extracted as tag: {:?}", tags);
+    assert!(tags.contains("tag"), "real tag missed: {:?}", tags);
+}
+
+#[test]
+fn test_tag_extraction_rejects_numeric_only_tags() {
+    let content = "Filed under #2024 and #project2024.";
+    let tags = obsidian_mcp::parse::tags::extract_tags(content);
+    assert!(!tags.contains("2024"), "purely numeric tag should be invalid: {:?}", tags);
+    assert!(tags.contains("project2024"));
+}
+
+#[test]
+fn test_vault_read_note_does_not_leak_frontmatter_hash_as_tag() {
+    let vault = obsidian_mcp::vault::Vault::new(test_config());
+    let _ = std::fs::remove_file(test_vault_path().join("_test-fm-hash-leak.md"));
+
+    vault.create_note(
+        "_test-fm-hash-leak.md",
+        "---\nsource: \"https://example.com/x#leaked-tag\"\n---\n# Note\n\nBody text.",
+        None,
+    ).unwrap();
+    let note = vault.read_note("_test-fm-hash-leak.md").unwrap();
+    assert!(!note.tags.contains(&"leaked-tag".to_string()), "frontmatter text leaked into tags: {:?}", note.tags);
+
+    let _ = std::fs::remove_file(test_vault_path().join("_test-fm-hash-leak.md"));
+}
+
+#[test]
+fn test_bulk_tag_remove_strips_inline_body_tag() {
+    let vault = obsidian_mcp::vault::Vault::new(test_config());
+    let _ = std::fs::remove_file(test_vault_path().join("_test-remove-body-tag.md"));
+
+    vault.create_note(
+        "_test-remove-body-tag.md",
+        "remove-body-tag-content #legacytag in the body.",
+        None,
+    ).unwrap();
+    let before = vault.read_note("_test-remove-body-tag.md").unwrap();
+    assert!(before.tags.contains(&"legacytag".to_string()));
+
+    vault.bulk_tag("remove-body-tag-content", &[], &["legacytag".to_string()]).unwrap();
+
+    let after = vault.read_note("_test-remove-body-tag.md").unwrap();
+    assert!(!after.tags.contains(&"legacytag".to_string()), "bulk_tag remove did not strip inline body tag: {:?}", after.tags);
+    assert!(!after.body.contains("#legacytag"), "inline tag text should be removed from body: {:?}", after.body);
+
+    let _ = std::fs::remove_file(test_vault_path().join("_test-remove-body-tag.md"));
+}

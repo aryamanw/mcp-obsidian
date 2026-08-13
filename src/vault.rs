@@ -26,7 +26,7 @@ impl Vault {
         let full_path = self.resolve_note_path(note_path)?;
         let content = std::fs::read_to_string(&full_path)?;
         let parsed = frontmatter::parse(&content);
-        let note_tags: Vec<String> = tags::all_tags(&content, &parsed.frontmatter)
+        let note_tags: Vec<String> = tags::all_tags(&parsed.body, &parsed.frontmatter)
             .into_iter().collect();
         let note_links: Vec<String> = wikilink::extract_wikilinks(&content)
             .iter().map(|l| l.target.clone()).collect();
@@ -186,6 +186,14 @@ impl Vault {
     }
 
     pub fn search_by_tag(&self, search_tags: &[String], match_mode: &str) -> anyhow::Result<Vec<NoteInfo>> {
+        // Tags are conventionally written with a leading '#' and are
+        // case-insensitive in Obsidian, but are stored internally without
+        // '#' and in their original case. Normalize the query the same way
+        // note tags are normalized so lookups aren't silently empty.
+        let normalized_search_tags: Vec<String> = search_tags.iter()
+            .map(|t| t.trim().trim_start_matches('#').to_lowercase())
+            .collect();
+
         let mut results = Vec::new();
 
         for entry in WalkDir::new(&self.config.vault_path)
@@ -195,11 +203,14 @@ impl Vault {
         {
             if let Ok(content) = std::fs::read_to_string(entry.path()) {
                 let parsed = frontmatter::parse(&content);
-                let note_tags = tags::all_tags(&content, &parsed.frontmatter);
+                let note_tags: std::collections::HashSet<String> = tags::all_tags(&parsed.body, &parsed.frontmatter)
+                    .into_iter()
+                    .map(|t| t.to_lowercase())
+                    .collect();
 
                 let matches = match match_mode {
-                    "all" => search_tags.iter().all(|t| note_tags.contains(t.as_str())),
-                    _ => search_tags.iter().any(|t| note_tags.contains(t.as_str())),
+                    "all" => normalized_search_tags.iter().all(|t| note_tags.contains(t)),
+                    _ => normalized_search_tags.iter().any(|t| note_tags.contains(t)),
                 };
 
                 if matches {
@@ -349,13 +360,14 @@ impl Vault {
             if let Ok(full_path) = self.resolve_note_path(&note.path) {
                 if let Ok(content) = std::fs::read_to_string(&full_path) {
                     let mut parsed = frontmatter::parse(&content);
-                    let changed = update_frontmatter_tags(&mut parsed.frontmatter, add_tags, remove_tags);
-                    if changed {
+                    let fm_changed = update_frontmatter_tags(&mut parsed.frontmatter, add_tags, remove_tags);
+                    let (new_body, body_changed) = tags::remove_inline_tags(&parsed.body, remove_tags);
+                    if fm_changed || body_changed {
                         let fm_str = serialize_frontmatter(&parsed.frontmatter);
                         let new_content = if parsed.frontmatter.is_empty() {
-                            parsed.body
+                            new_body
                         } else {
-                            format!("---\n{}---\n{}", fm_str, parsed.body)
+                            format!("---\n{}---\n{}", fm_str, new_body)
                         };
                         std::fs::write(&full_path, &new_content)?;
                         count += 1;
@@ -642,16 +654,16 @@ fn update_frontmatter_tags(fm: &mut HashMap<String, String>, add_tags: &[String]
         .collect();
 
     for tag in add_tags {
-        let tag = tag.trim_start_matches('#').to_string();
-        if !tags.contains(&tag) {
+        let tag = tag.trim().trim_start_matches('#').to_string();
+        if !tags.iter().any(|t| t.eq_ignore_ascii_case(&tag)) {
             tags.push(tag);
             changed = true;
         }
     }
 
     for tag in remove_tags {
-        let tag = tag.trim_start_matches('#').to_string();
-        if let Some(pos) = tags.iter().position(|t| t == &tag) {
+        let tag = tag.trim().trim_start_matches('#').to_string();
+        if let Some(pos) = tags.iter().position(|t| t.eq_ignore_ascii_case(&tag)) {
             tags.remove(pos);
             changed = true;
         }
@@ -674,17 +686,21 @@ fn extract_significant_words(text: &str, max_words: usize) -> Vec<String> {
         "where", "these", "those", "being", "while", "over", "such", "each",
         "like", "well", "make", "made", "much", "more", "most", "many",
     ];
-    let mut words: Vec<String> = text.to_lowercase()
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|w| w.len() >= 3)
-        .filter(|w| !stop_words.contains(w))
-        .map(|w| w.to_string())
-        .collect();
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for word in text.to_lowercase().split(|c: char| !c.is_alphanumeric()) {
+        if word.len() >= 3 && !stop_words.contains(&word) {
+            *counts.entry(word.to_string()).or_insert(0) += 1;
+        }
+    }
 
-    words.sort();
-    words.dedup();
+    // Rank by frequency (most mentioned = most significant), breaking ties
+    // alphabetically for determinism. Sorting alphabetically first and then
+    // truncating would keep whichever words happen to start with 'a'-'j'
+    // regardless of how central they are to the note.
+    let mut words: Vec<(String, usize)> = counts.into_iter().collect();
+    words.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     words.truncate(max_words);
-    words
+    words.into_iter().map(|(w, _)| w).collect()
 }
 
 fn build_note_content(body: &str, frontmatter_fields: Option<&HashMap<String, String>>) -> String {
