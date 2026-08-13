@@ -22,13 +22,9 @@ fn yaml_anchor_or_alias_regex() -> &'static Regex {
 pub struct NoteContent {
     pub frontmatter: HashMap<String, String>,
     pub body: String,
-    #[allow(dead_code)]
-    pub raw: String,
 }
 
 pub fn parse(content: &str) -> NoteContent {
-    let raw = content.to_string();
-
     if content.starts_with("---") {
         let without_opening = &content[3..];
         if let Some(end_idx) = without_opening.find("---") {
@@ -39,20 +35,18 @@ pub fn parse(content: &str) -> NoteContent {
                 return NoteContent {
                     frontmatter: HashMap::new(),
                     body: content.to_string(),
-                    raw,
                 };
             }
             let body = without_opening[end_idx + 3..].trim_start_matches('\n').to_string();
 
             let frontmatter = parse_yaml(yaml_str);
-            return NoteContent { frontmatter, body, raw };
+            return NoteContent { frontmatter, body };
         }
     }
 
     NoteContent {
         frontmatter: HashMap::new(),
         body: content.to_string(),
-        raw,
     }
 }
 
