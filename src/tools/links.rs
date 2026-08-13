@@ -20,3 +20,9 @@ pub struct LinkGraphRequest {
     #[schemars(description = "Depth of link neighbors to traverse (optional, defaults to 1)")]
     pub depth: Option<usize>,
 }
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct FindBrokenLinksRequest {}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct FindOrphanNotesRequest {}

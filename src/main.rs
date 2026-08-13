@@ -96,6 +96,49 @@ impl ObsidianMcp {
         }
     }
 
+    #[tool(description = "List notes sorted by last-modified time, newest first.")]
+    fn list_recent_notes(
+        &self,
+        Parameters(req): Parameters<tools::read::ListRecentNotesRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let limit = req.limit.unwrap_or(20);
+        match self.vault.list_recent_notes(limit) {
+            Ok(notes) => {
+                let results: Vec<serde_json::Value> = notes.iter().map(|(path, modified)| {
+                    let modified: chrono::DateTime<chrono::Utc> = (*modified).into();
+                    serde_json::json!({
+                        "path": path,
+                        "modified": modified.to_rfc3339(),
+                    })
+                }).collect();
+                let result = serde_json::json!({
+                    "notes": results,
+                    "count": results.len(),
+                });
+                Ok(CallToolResult::success(vec![Content::text(result.to_string())]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+        }
+    }
+
+    #[tool(description = "Get the text under a heading in a note (e.g. '## Tasks'), up to the next heading of equal or higher level.")]
+    fn get_section(
+        &self,
+        Parameters(req): Parameters<tools::read::GetSectionRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        match self.vault.get_section(&req.path, &req.heading) {
+            Ok(section) => {
+                let result = serde_json::json!({
+                    "path": req.path,
+                    "heading": req.heading,
+                    "content": section,
+                });
+                Ok(CallToolResult::success(vec![Content::text(result.to_string())]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+        }
+    }
+
     // ===== Search Tools =====
 
     #[tool(description = "Full-text search across the vault. Returns matching notes with snippets.")]
@@ -162,6 +205,26 @@ impl ObsidianMcp {
                 }).collect();
                 let result = serde_json::json!({
                     "results": results,
+                    "count": results.len(),
+                });
+                Ok(CallToolResult::success(vec![Content::text(result.to_string())]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+        }
+    }
+
+    #[tool(description = "List all tags used across the vault, each with a usage count (number of notes containing it).")]
+    fn list_tags(
+        &self,
+        Parameters(_req): Parameters<tools::search::ListTagsRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        match self.vault.list_tags() {
+            Ok(tags) => {
+                let results: Vec<serde_json::Value> = tags.iter().map(|(tag, count)| {
+                    serde_json::json!({ "tag": tag, "count": count })
+                }).collect();
+                let result = serde_json::json!({
+                    "tags": results,
                     "count": results.len(),
                 });
                 Ok(CallToolResult::success(vec![Content::text(result.to_string())]))
@@ -316,6 +379,41 @@ impl ObsidianMcp {
         }
     }
 
+    #[tool(description = "Update just one section of a note, addressed by heading (e.g. '## Tasks'). Creates the section at the end of the note if the heading doesn't exist yet. Use 'append' to add to the section or 'replace' to overwrite it.")]
+    fn update_section(
+        &self,
+        Parameters(req): Parameters<tools::write::UpdateSectionRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        match self.vault.update_section(&req.path, &req.heading, &req.content, &req.mode) {
+            Ok(note) => {
+                let result = serde_json::json!({
+                    "path": note.path,
+                    "heading": req.heading,
+                    "message": "Section updated successfully",
+                });
+                Ok(CallToolResult::success(vec![Content::text(result.to_string())]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+        }
+    }
+
+    #[tool(description = "Move a note to the vault's .trash folder instead of deleting it. Collisions in .trash get a numeric suffix.")]
+    fn trash_note(
+        &self,
+        Parameters(req): Parameters<tools::write::TrashNoteRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        match self.vault.trash_note(&req.path) {
+            Ok(()) => {
+                let result = serde_json::json!({
+                    "path": req.path,
+                    "message": "Note moved to .trash",
+                });
+                Ok(CallToolResult::success(vec![Content::text(result.to_string())]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+        }
+    }
+
     // ===== Link Tools =====
 
     #[tool(description = "Resolve all [[wikilinks]] in a note to their actual file paths.")]
@@ -421,6 +519,43 @@ impl ObsidianMcp {
         Ok(CallToolResult::success(vec![Content::text(
             result.to_string(),
         )]))
+    }
+
+    #[tool(description = "Find all [[wikilinks]] across the vault that don't resolve to an existing note.")]
+    fn find_broken_links(
+        &self,
+        Parameters(_req): Parameters<tools::links::FindBrokenLinksRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        match self.vault.find_broken_links() {
+            Ok(broken) => {
+                let results: Vec<serde_json::Value> = broken.iter().map(|b| {
+                    serde_json::json!({ "source": b.source, "target": b.target })
+                }).collect();
+                let result = serde_json::json!({
+                    "broken_links": results,
+                    "count": results.len(),
+                });
+                Ok(CallToolResult::success(vec![Content::text(result.to_string())]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+        }
+    }
+
+    #[tool(description = "Find notes with no backlinks — nothing else in the vault links to them.")]
+    fn find_orphan_notes(
+        &self,
+        Parameters(_req): Parameters<tools::links::FindOrphanNotesRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        match self.vault.find_orphan_notes() {
+            Ok(orphans) => {
+                let result = serde_json::json!({
+                    "orphans": orphans,
+                    "count": orphans.len(),
+                });
+                Ok(CallToolResult::success(vec![Content::text(result.to_string())]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e.to_string())])),
+        }
     }
 
     // ===== Template Tools =====

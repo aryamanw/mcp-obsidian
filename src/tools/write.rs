@@ -67,3 +67,21 @@ pub struct SetFrontmatterRequest {
     #[schemars(description = "Frontmatter fields to set (merges with existing)")]
     pub fields: HashMap<String, String>,
 }
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct UpdateSectionRequest {
+    #[schemars(description = "Path to the note")]
+    pub path: String,
+    #[schemars(description = "Heading to update, including its '#' markers (e.g. '## Tasks'). Created at the end of the note if not found.")]
+    pub heading: String,
+    #[schemars(description = "Content to write into the section")]
+    pub content: String,
+    #[schemars(description = "'append' to add to the end of the section, 'replace' to overwrite it")]
+    pub mode: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct TrashNoteRequest {
+    #[schemars(description = "Path to the note to move to .trash")]
+    pub path: String,
+}

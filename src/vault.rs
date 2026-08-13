@@ -1,6 +1,6 @@
 use crate::config::Config;
-use crate::parse::{frontmatter, wikilink, tags};
-use std::collections::HashMap;
+use crate::parse::{frontmatter, wikilink, tags, sections};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
@@ -11,6 +11,12 @@ pub struct NoteInfo {
     pub body: String,
     pub tags: Vec<String>,
     pub links: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BrokenLink {
+    pub source: String,
+    pub target: String,
 }
 
 pub struct Vault {
@@ -38,6 +44,22 @@ impl Vault {
             tags: note_tags,
             links: note_links,
         })
+    }
+
+    pub fn get_section(&self, note_path: &str, heading: &str) -> anyhow::Result<String> {
+        let full_path = self.resolve_note_path(note_path)?;
+        let content = std::fs::read_to_string(&full_path)?;
+        let parsed = frontmatter::parse(&content);
+
+        match sections::find_section(&parsed.body, heading) {
+            Ok(section) => Ok(parsed.body[section.start..section.end].trim_end().to_string()),
+            Err(sections::SectionError::NotFound) => {
+                Err(anyhow::anyhow!("Section '{}' not found", heading))
+            }
+            Err(sections::SectionError::Ambiguous(n)) => Err(anyhow::anyhow!(
+                "Heading '{}' matches {} sections; ambiguous", heading, n
+            )),
+        }
     }
 
     pub fn list_vault(&self, subpath: Option<&str>, depth: Option<usize>) -> anyhow::Result<Vec<String>> {
@@ -68,6 +90,27 @@ impl Vault {
         }
 
         entries.sort();
+        Ok(entries)
+    }
+
+    pub fn list_recent_notes(&self, limit: usize) -> anyhow::Result<Vec<(String, std::time::SystemTime)>> {
+        let mut entries: Vec<(String, std::time::SystemTime)> = Vec::new();
+
+        for entry in WalkDir::new(&self.config.vault_path)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "md"))
+        {
+            if let Ok(metadata) = entry.metadata() {
+                if let Ok(modified) = metadata.modified() {
+                    let rel = wikilink::relative_path(entry.path(), &self.config.vault_path);
+                    entries.push((rel, modified));
+                }
+            }
+        }
+
+        entries.sort_by(|a, b| b.1.cmp(&a.1));
+        entries.truncate(limit);
         Ok(entries)
     }
 
@@ -162,6 +205,75 @@ impl Vault {
         self.read_note(note_path)
     }
 
+    pub fn update_section(&self, note_path: &str, heading: &str, content: &str, mode: &str) -> anyhow::Result<NoteInfo> {
+        if mode != "append" && mode != "replace" {
+            return Err(anyhow::anyhow!("Invalid mode: {} (use 'append' or 'replace')", mode));
+        }
+
+        if !heading.trim_start().starts_with('#') {
+            return Err(anyhow::anyhow!("Heading must include '#' markers (e.g. '## Tasks')"));
+        }
+
+        let full_path = self.resolve_note_path(note_path)?;
+        let existing = std::fs::read_to_string(&full_path)?;
+        let parsed = frontmatter::parse(&existing);
+
+        let new_body = match sections::find_section(&parsed.body, heading) {
+            Ok(section) => {
+                let heading_line_end = parsed.body[section.start..]
+                    .find('\n')
+                    .map(|p| section.start + p + 1)
+                    .unwrap_or(parsed.body.len());
+                let mut heading_line = parsed.body[section.start..heading_line_end].to_string();
+
+                if mode == "replace" {
+                    if !heading_line.ends_with('\n') {
+                        heading_line.push('\n');
+                    }
+                    format!(
+                        "{}{}{}{}",
+                        &parsed.body[..section.start],
+                        heading_line,
+                        content.trim_end(),
+                        if parsed.body[section.end..].is_empty() { "\n".to_string() } else { format!("\n{}", &parsed.body[section.end..]) }
+                    )
+                } else {
+                    let mut section_body = parsed.body[..section.end].to_string();
+                    if !section_body.ends_with('\n') {
+                        section_body.push('\n');
+                    }
+                    section_body.push_str(content.trim_end());
+                    section_body.push('\n');
+                    format!("{}{}", section_body, &parsed.body[section.end..])
+                }
+            }
+            Err(sections::SectionError::NotFound) => {
+                let mut body = parsed.body.trim_end().to_string();
+                body.push_str("\n\n");
+                body.push_str(heading.trim());
+                body.push('\n');
+                body.push_str(content.trim_end());
+                body.push('\n');
+                body
+            }
+            Err(sections::SectionError::Ambiguous(n)) => {
+                return Err(anyhow::anyhow!(
+                    "Heading '{}' matches {} sections; ambiguous", heading, n
+                ));
+            }
+        };
+
+        let fm_str = serialize_frontmatter(&parsed.frontmatter);
+        let final_content = if parsed.frontmatter.is_empty() {
+            new_body
+        } else {
+            format!("---\n{}---\n{}", fm_str, new_body)
+        };
+
+        std::fs::write(&full_path, &final_content)?;
+        self.read_note(note_path)
+    }
+
     pub fn search_notes(&self, query: &str, limit: usize) -> anyhow::Result<Vec<NoteInfo>> {
         let query_lower = query.to_lowercase();
         let mut results = Vec::new();
@@ -251,6 +363,29 @@ impl Vault {
         Ok(results)
     }
 
+    pub fn list_tags(&self) -> anyhow::Result<Vec<(String, usize)>> {
+        let mut counts: HashMap<String, usize> = HashMap::new();
+
+        for entry in WalkDir::new(&self.config.vault_path)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "md"))
+        {
+            if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                let parsed = frontmatter::parse(&content);
+                for tag in tags::all_tags(&parsed.body, &parsed.frontmatter) {
+                    *counts.entry(tag).or_insert(0) += 1;
+                }
+            }
+        }
+
+        // Sorted by count descending, then alphabetically for ties — same
+        // tie-break convention as extract_significant_words below.
+        let mut result: Vec<(String, usize)> = counts.into_iter().collect();
+        result.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        Ok(result)
+    }
+
     pub fn backlinks(&self, note_path: &str) -> anyhow::Result<Vec<String>> {
         let target_stem = Path::new(note_path).file_stem()
             .and_then(|s| s.to_str())
@@ -272,6 +407,67 @@ impl Vault {
         }
 
         Ok(backlinking_notes)
+    }
+
+    pub fn find_broken_links(&self) -> anyhow::Result<Vec<BrokenLink>> {
+        let mut broken = Vec::new();
+
+        for entry in WalkDir::new(&self.config.vault_path)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "md"))
+        {
+            if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                let source = wikilink::relative_path(entry.path(), &self.config.vault_path);
+                for link in wikilink::extract_wikilinks(&content) {
+                    if wikilink::resolve_wikilink(&link.target, &self.config.vault_path).is_none() {
+                        broken.push(BrokenLink {
+                            source: source.clone(),
+                            target: link.target,
+                        });
+                    }
+                }
+            }
+        }
+
+        Ok(broken)
+    }
+
+    pub fn find_orphan_notes(&self) -> anyhow::Result<Vec<String>> {
+        let mut linked_stems: HashSet<String> = HashSet::new();
+        let mut all_notes: Vec<String> = Vec::new();
+
+        for entry in WalkDir::new(&self.config.vault_path)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "md"))
+        {
+            let rel = wikilink::relative_path(entry.path(), &self.config.vault_path);
+            all_notes.push(rel);
+
+            if let Ok(content) = std::fs::read_to_string(entry.path()) {
+                for link in wikilink::extract_wikilinks(&content) {
+                    let stem = Path::new(&link.target)
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or(&link.target)
+                        .to_string();
+                    linked_stems.insert(stem);
+                }
+            }
+        }
+
+        // "Orphan" here means no incoming links, regardless of whether the
+        // note itself links out — matching backlinks()'s own file-stem
+        // comparison, not full-path comparison.
+        let orphans = all_notes.into_iter()
+            .filter(|rel| {
+                let stem = Path::new(rel).file_stem().and_then(|s| s.to_str()).unwrap_or(rel);
+                !linked_stems.contains(stem)
+            })
+            .collect();
+
+        Ok(orphans)
     }
 
     pub fn rename_note(&self, source: &str, dest: &str) -> anyhow::Result<NoteInfo> {
@@ -350,6 +546,32 @@ impl Vault {
         std::fs::remove_file(&source_full)?;
 
         self.read_note(&dest_rel)
+    }
+
+    pub fn trash_note(&self, note_path: &str) -> anyhow::Result<()> {
+        let full_path = self.resolve_note_path(note_path)?;
+
+        let trash_dir = self.config.vault_path.join(".trash");
+        std::fs::create_dir_all(&trash_dir)?;
+
+        let file_name = full_path.file_name()
+            .ok_or_else(|| anyhow::anyhow!("Invalid path"))?
+            .to_string_lossy()
+            .to_string();
+        let stem = full_path.file_stem().and_then(|s| s.to_str()).unwrap_or("note").to_string();
+        let ext = full_path.extension().and_then(|s| s.to_str())
+            .map(|s| format!(".{}", s))
+            .unwrap_or_default();
+
+        let mut dest = trash_dir.join(&file_name);
+        let mut counter = 1;
+        while dest.exists() {
+            dest = trash_dir.join(format!("{} ({}){}", stem, counter, ext));
+            counter += 1;
+        }
+
+        std::fs::rename(&full_path, &dest)?;
+        Ok(())
     }
 
     pub fn bulk_tag(&self, query: &str, add_tags: &[String], remove_tags: &[String]) -> anyhow::Result<usize> {

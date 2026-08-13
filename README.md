@@ -152,6 +152,8 @@ Windows:
 | `read_note` | Read a note's content, frontmatter, tags, and resolved links |
 | `list_vault` | List vault structure — folders and notes |
 | `get_metadata` | Get frontmatter, tags, outgoing links, and backlink count |
+| `list_recent_notes` | List notes sorted by last-modified time, newest first |
+| `get_section` | Read a single section of a note by heading (e.g. '## Tasks') |
 
 ### Search
 | Tool | Description |
@@ -159,6 +161,7 @@ Windows:
 | `search_notes` | Full-text search with preview snippets |
 | `search_by_tag` | Find notes by tags (OR or AND mode) |
 | `search_by_frontmatter` | Filter notes by frontmatter key-value pairs |
+| `list_tags` | List all tags used in the vault, each with a usage count |
 
 ### Write
 | Tool | Description |
@@ -170,6 +173,8 @@ Windows:
 | `update_note` | Append or replace note content (preserves frontmatter) |
 | `set_frontmatter` | Set or merge frontmatter fields on a note |
 | `bulk_tag` | Add or remove tags across notes matching a full-text search query |
+| `update_section` | Append to or replace a single section of a note by heading |
+| `trash_note` | Move a note to the vault's `.trash` folder instead of deleting it |
 
 ### Links
 | Tool | Description |
@@ -178,6 +183,8 @@ Windows:
 | `backlinks` | Find all notes that link to a given note |
 | `link_graph` | Traverse outgoing links up to N hops |
 | `link_related_notes` | Find notes related by content similarity and add a `## Related` section |
+| `find_broken_links` | Find `[[wikilinks]]` that don't resolve to an existing note |
+| `find_orphan_notes` | Find notes with no backlinks (nothing links to them) |
 
 ### Templates
 | Tool | Description |
@@ -201,6 +208,7 @@ Windows:
 - **Frontmatter size limit**: Parsing capped at 8 KB
 - **Template isolation**: Templates confirmed to reside within the templates directory
 - **Listing depth limit**: Recursive listing capped at 20 levels
+- **Trash, not delete**: `trash_note` moves notes into a vault-local `.trash/` folder rather than deleting them; that folder is still a normal, visible part of the vault to other tools (e.g. `list_vault`, `search_notes`)
 
 ## Building from Source
 
