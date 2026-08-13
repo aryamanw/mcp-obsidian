@@ -53,8 +53,21 @@ pub fn resolve_wikilink(target: &str, vault_path: &Path) -> Option<PathBuf> {
 }
 
 pub fn relative_path(path: &Path, vault_path: &Path) -> String {
-    path.strip_prefix(vault_path)
+    let rel = path.strip_prefix(vault_path)
         .unwrap_or(path)
         .to_string_lossy()
-        .replace('\\', "/")
+        .into_owned();
+
+    // `\` is the actual path separator on Windows (and can't appear in a
+    // real Windows filename, so normalizing it to `/` is always safe
+    // there). On Unix, `/` is already the separator and a `\` in the
+    // resulting string can only be a literal character from a real
+    // filename — replacing it would corrupt that filename on any later
+    // round-trip through `resolve_note_path`. So only normalize on the
+    // platform where it's actually a separator.
+    if cfg!(windows) {
+        rel.replace('\\', "/")
+    } else {
+        rel
+    }
 }

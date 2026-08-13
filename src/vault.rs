@@ -115,14 +115,31 @@ impl Vault {
     }
 
     pub fn create_folder(&self, folder_path: &str) -> anyhow::Result<()> {
-        let vault_canonical = self.config.vault_path.canonicalize()
-            .map_err(|_| anyhow::anyhow!("Vault path error"))?;
-
-        let joined = self.config.vault_path.join(folder_path);
+        let joined = self.validate_new_folder_path(folder_path)?;
 
         if joined.exists() {
             return Err(anyhow::anyhow!("Folder already exists"));
         }
+
+        std::fs::create_dir_all(&joined)?;
+        Ok(())
+    }
+
+    /// Validates a not-yet-existing, possibly multi-level-nested folder
+    /// path (e.g. `a/b/c` where none of `a`, `b`, `c` exist yet) by walking
+    /// up to the first ancestor that does exist and checking *that* stays
+    /// within the vault. This differs from `validate_parent`, which only
+    /// checks a single immediate parent and requires it to already exist —
+    /// `create_folder` needs to support `create_dir_all`-style deep
+    /// creation, so it gets its own ancestor-walking variant rather than
+    /// being forced into `validate_parent`'s single-level contract.
+    fn validate_new_folder_path(&self, user_path: &str) -> anyhow::Result<PathBuf> {
+        reject_dotfile_component(user_path)?;
+
+        let vault_canonical = self.config.vault_path.canonicalize()
+            .map_err(|_| anyhow::anyhow!("Vault path error"))?;
+
+        let joined = self.config.vault_path.join(user_path);
 
         let mut ancestor = joined.as_path();
         loop {
@@ -138,8 +155,7 @@ impl Vault {
                 .ok_or_else(|| anyhow::anyhow!("Invalid path"))?;
         }
 
-        std::fs::create_dir_all(&joined)?;
-        Ok(())
+        Ok(joined)
     }
 
     pub fn create_note(&self, note_path: &str, content: &str, frontmatter_fields: Option<&HashMap<String, String>>) -> anyhow::Result<NoteInfo> {
@@ -489,8 +505,19 @@ impl Vault {
         std::fs::rename(&source_full, &dest_full)?;
 
         let new_target = dest.trim_end_matches(".md").to_string();
+        self.redirect_backlinks(&source_rel, &source_stem, &new_target)?;
 
-        let backlinks = self.backlinks(&source_rel)?;
+        self.read_note(dest)
+    }
+
+    /// Rewrites every `[[old_stem]]` (or `[[old_stem|alias]]`) wikilink in
+    /// notes that currently link to `old_rel`, redirecting it to point at
+    /// `new_target` instead. Shared by `rename_note` (old_rel = the
+    /// pre-rename path) and `merge_notes` (old_rel = the just-merged source
+    /// note, about to be deleted) so that removing/renaming a note doesn't
+    /// silently leave dangling links elsewhere in the vault.
+    fn redirect_backlinks(&self, old_rel: &str, old_stem: &str, new_target: &str) -> anyhow::Result<()> {
+        let backlinks = self.backlinks(old_rel)?;
         for bl_path in &backlinks {
             if let Ok(full_path) = self.resolve_note_path(bl_path) {
                 if let Ok(content) = std::fs::read_to_string(&full_path) {
@@ -501,7 +528,7 @@ impl Vault {
                         let link_stem = Path::new(&link.target).file_stem()
                             .and_then(|s| s.to_str())
                             .unwrap_or(&link.target);
-                        if link_stem == source_stem {
+                        if link_stem == old_stem {
                             let replacement = if let Some(alias) = &link.alias {
                                 format!("[[{}|{}]]", new_target, alias)
                             } else {
@@ -517,33 +544,39 @@ impl Vault {
                 }
             }
         }
-
-        self.read_note(dest)
+        Ok(())
     }
 
     pub fn merge_notes(&self, source: &str, dest: &str) -> anyhow::Result<NoteInfo> {
         let source_full = self.resolve_note_path(source)?;
-        let source_name = source_full.file_stem()
+        let source_stem = source_full.file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("source")
             .to_string();
+        let source_rel = wikilink::relative_path(&source_full, &self.config.vault_path);
         let source_body = {
             let content = std::fs::read_to_string(&source_full)?;
             frontmatter::parse(&content).body
         };
 
         let dest_full = self.resolve_note_path(dest)?;
+        if source_full == dest_full {
+            return Err(anyhow::anyhow!("source and destination resolve to the same note"));
+        }
         let dest_rel = wikilink::relative_path(&dest_full, &self.config.vault_path);
         let dest_content = std::fs::read_to_string(&dest_full)?;
 
         let merged = format!(
             "{}\n\n## Merged from {}\n\n{}",
             dest_content.trim_end(),
-            source_name,
+            source_stem,
             source_body.trim()
         );
         std::fs::write(&dest_full, &merged)?;
         std::fs::remove_file(&source_full)?;
+
+        let dest_target = dest_rel.trim_end_matches(".md").to_string();
+        self.redirect_backlinks(&source_rel, &source_stem, &dest_target)?;
 
         self.read_note(&dest_rel)
     }
@@ -663,11 +696,27 @@ impl Vault {
     }
 
     pub fn get_templates_dir(&self) -> PathBuf {
+        // `.exists()` alone can't distinguish "templates" from "Templates"
+        // on a case-insensitive filesystem (e.g. default macOS APFS) — both
+        // checks would silently resolve to whichever one actually exists,
+        // making the "Templates" fallback dead code there. Cross-check
+        // against the vault root's actual directory entries (which do
+        // preserve case even on a case-insensitive filesystem) so the two
+        // names stay meaningfully distinct on every platform.
+        let root_entries: Option<Vec<String>> = std::fs::read_dir(&self.config.vault_path)
+            .ok()
+            .map(|entries| entries.filter_map(|e| e.ok())
+                .filter_map(|e| e.file_name().to_str().map(str::to_string))
+                .collect());
+        let exists_with_exact_case = |name: &str| {
+            root_entries.as_ref().is_some_and(|entries| entries.iter().any(|e| e == name))
+        };
+
         let templates_dir = self.config.vault_path.join("templates");
-        if templates_dir.exists() { return templates_dir; }
+        if exists_with_exact_case("templates") { return templates_dir; }
 
         let templates_dir = self.config.vault_path.join("Templates");
-        if templates_dir.exists() { return templates_dir; }
+        if exists_with_exact_case("Templates") { return templates_dir; }
 
         let obsidian_config = self.config.vault_path.join(".obsidian").join("templates.json");
         if let Ok(config_str) = std::fs::read_to_string(&obsidian_config) {
@@ -807,6 +856,9 @@ impl Vault {
     }
 
     fn validate_path(&self, user_path: &str) -> anyhow::Result<PathBuf> {
+        reject_empty_path(user_path)?;
+        reject_dotfile_component(user_path)?;
+
         let vault_canonical = self.config.vault_path.canonicalize()
             .map_err(|_| anyhow::anyhow!("Vault path error"))?;
 
@@ -823,6 +875,9 @@ impl Vault {
     }
 
     fn validate_parent(&self, user_path: &str) -> anyhow::Result<PathBuf> {
+        reject_empty_path(user_path)?;
+        reject_dotfile_component(user_path)?;
+
         let vault_canonical = self.config.vault_path.canonicalize()
             .map_err(|_| anyhow::anyhow!("Vault path error"))?;
 
@@ -861,6 +916,32 @@ impl Vault {
 
         Err(anyhow::anyhow!("Note not found"))
     }
+}
+
+fn reject_empty_path(user_path: &str) -> anyhow::Result<()> {
+    if user_path.trim().is_empty() {
+        return Err(anyhow::anyhow!("Path must not be empty"));
+    }
+    Ok(())
+}
+
+/// Rejects any path with a dotfile/dot-directory component (`.obsidian`,
+/// `.trash`, `.git`, etc.) — the path-boundary check alone (canonicalize +
+/// starts_with) only enforces that a path stays *inside* the vault, not
+/// that it avoids the vault's own internal config/state directories. A
+/// note-CRUD tool has no legitimate reason to target those, and letting one
+/// write to e.g. `.obsidian/graph.json` corrupts state a different
+/// subsystem (GraphAnalyzer) trusts. `Path::components()` naturally treats
+/// a leading `./` as `Component::CurDir`, not `Component::Normal`, so this
+/// doesn't misfire on that common relative-path spelling.
+fn reject_dotfile_component(user_path: &str) -> anyhow::Result<()> {
+    let has_dotfile = Path::new(user_path)
+        .components()
+        .any(|c| matches!(c, std::path::Component::Normal(s) if s.to_string_lossy().starts_with('.')));
+    if has_dotfile {
+        return Err(anyhow::anyhow!("Access denied: path targets a hidden/config file or directory"));
+    }
+    Ok(())
 }
 
 fn update_frontmatter_tags(fm: &mut HashMap<String, String>, add_tags: &[String], remove_tags: &[String]) -> bool {

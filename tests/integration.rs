@@ -19,6 +19,43 @@ fn test_frontmatter_parsing() {
 }
 
 #[test]
+fn test_frontmatter_rejects_yaml_anchors_and_aliases() {
+    // Regression test for a confirmed DoS: a small anchor/alias-based YAML
+    // payload amplifies into millions of elements ("billion laughs").
+    // Frontmatter containing anchors/aliases must be treated as absent
+    // (same fallback as oversized frontmatter), not parsed.
+    let content = "---\na: &a [\"x\",\"x\"]\nb: [*a,*a]\n---\n# Note\n\nBody.";
+    let parsed = obsidian_mcp::parse::frontmatter::parse(content);
+    assert!(parsed.frontmatter.is_empty(), "anchor/alias frontmatter should be rejected, not parsed: {:?}", parsed.frontmatter);
+}
+
+#[test]
+fn test_frontmatter_anchor_alias_amplification_is_bounded() {
+    // Empirical regression test: the exact payload shape that measured
+    // 5.8s / 10^7 elements before the fix must now return near-instantly,
+    // because it's rejected before ever reaching YamlLoader.
+    let mut yaml = String::new();
+    yaml.push_str("a: &a [\"x\",\"x\",\"x\",\"x\",\"x\",\"x\",\"x\",\"x\",\"x\",\"x\"]\n");
+    let mut prev = 'a';
+    for cur in ['b', 'c', 'd', 'e', 'f', 'g'] {
+        yaml.push_str(&format!(
+            "{}: &{} [*{},*{},*{},*{},*{},*{},*{},*{},*{},*{}]\n",
+            cur, cur, prev, prev, prev, prev, prev, prev, prev, prev, prev, prev
+        ));
+        prev = cur;
+    }
+    assert!(yaml.len() < 8192);
+    let content = format!("---\n{}---\n# Body\n", yaml);
+
+    let start = std::time::Instant::now();
+    let parsed = obsidian_mcp::parse::frontmatter::parse(&content);
+    let elapsed = start.elapsed();
+
+    assert!(parsed.frontmatter.is_empty());
+    assert!(elapsed.as_millis() < 500, "amplification payload took {:?}, expected near-instant rejection", elapsed);
+}
+
+#[test]
 fn test_frontmatter_no_frontmatter() {
     let content = "# Just a heading\n\nNo frontmatter.";
     let parsed = obsidian_mcp::parse::frontmatter::parse(content);
@@ -129,6 +166,50 @@ fn test_vault_create_and_read() {
 }
 
 #[test]
+fn test_vault_write_tools_reject_dotfile_paths() {
+    let vault = obsidian_mcp::vault::Vault::new(test_config());
+
+    // A note-CRUD tool has no legitimate reason to target a vault
+    // config/state file — must be rejected, not silently allowed through
+    // the vault-boundary check (which only guards against escaping the
+    // vault, not against targeting internal dotfiles within it).
+    let err = vault.create_note(".obsidian/graph.json", "{}", None).unwrap_err();
+    assert!(err.to_string().contains("Access denied"), "expected rejection, got: {}", err);
+
+    let err2 = vault.read_note(".trash/whatever.md");
+    assert!(err2.is_err());
+
+    // A leading "./" is a normal relative-path spelling and must NOT be
+    // mistaken for a dotfile component.
+    let _ = std::fs::remove_file(test_vault_path().join("_test-dotslash.md"));
+    let created = vault.create_note("./_test-dotslash.md", "fine", None);
+    assert!(created.is_ok(), "a leading './' should not be rejected: {:?}", created.err());
+    let _ = std::fs::remove_file(test_vault_path().join("_test-dotslash.md"));
+}
+
+#[test]
+fn test_vault_write_tools_reject_empty_path() {
+    let vault = obsidian_mcp::vault::Vault::new(test_config());
+    let err = vault.create_note("", "content", None).unwrap_err();
+    assert!(err.to_string().contains("empty"), "expected an empty-path error, got: {}", err);
+}
+
+#[test]
+fn test_vault_create_folder_nested() {
+    let vault = obsidian_mcp::vault::Vault::new(test_config());
+    let _ = std::fs::remove_dir_all(test_vault_path().join("_test-nested-a"));
+
+    // None of the intermediate directories exist yet — create_folder must
+    // still support deep creation (this is the behavior validate_parent
+    // deliberately does NOT support, since it requires an existing single
+    // parent; create_folder needs its own ancestor-walking validator).
+    vault.create_folder("_test-nested-a/b/c").unwrap();
+    assert!(test_vault_path().join("_test-nested-a/b/c").is_dir());
+
+    let _ = std::fs::remove_dir_all(test_vault_path().join("_test-nested-a"));
+}
+
+#[test]
 fn test_vault_update_note_append() {
     let vault = obsidian_mcp::vault::Vault::new(test_config());
 
@@ -230,6 +311,48 @@ fn test_vault_merge_notes() {
     assert!(!test_vault_path().join("_test-merge-source.md").exists());
 
     let _ = std::fs::remove_file(test_vault_path().join("_test-merge-dest.md"));
+}
+
+#[test]
+fn test_vault_merge_notes_rejects_self_merge() {
+    let vault = obsidian_mcp::vault::Vault::new(test_config());
+    let _ = std::fs::remove_file(test_vault_path().join("_test-merge-self.md"));
+
+    vault.create_note("_test-merge-self.md", "Original content", None).unwrap();
+
+    let err = vault.merge_notes("_test-merge-self.md", "_test-merge-self.md").unwrap_err();
+    assert!(err.to_string().contains("same"), "expected a same-file error, got: {}", err);
+
+    // The note must survive untouched.
+    let note = vault.read_note("_test-merge-self.md").unwrap();
+    assert!(note.body.contains("Original content"));
+
+    // Also verify the "same note, different spelling" case (with/without .md).
+    let err2 = vault.merge_notes("_test-merge-self.md", "_test-merge-self").unwrap_err();
+    assert!(err2.to_string().contains("same"));
+
+    let _ = std::fs::remove_file(test_vault_path().join("_test-merge-self.md"));
+}
+
+#[test]
+fn test_vault_merge_notes_redirects_backlinks() {
+    let vault = obsidian_mcp::vault::Vault::new(test_config());
+    let _ = std::fs::remove_file(test_vault_path().join("_test-merge-bl-source.md"));
+    let _ = std::fs::remove_file(test_vault_path().join("_test-merge-bl-dest.md"));
+    let _ = std::fs::remove_file(test_vault_path().join("_test-merge-bl-linker.md"));
+
+    vault.create_note("_test-merge-bl-source.md", "Source content", None).unwrap();
+    vault.create_note("_test-merge-bl-dest.md", "Dest content", None).unwrap();
+    vault.create_note("_test-merge-bl-linker.md", "Links to [[_test-merge-bl-source]]", None).unwrap();
+
+    vault.merge_notes("_test-merge-bl-source.md", "_test-merge-bl-dest.md").unwrap();
+
+    let linker = vault.read_note("_test-merge-bl-linker.md").unwrap();
+    assert!(linker.body.contains("[[_test-merge-bl-dest]]"), "backlink was not redirected: {:?}", linker.body);
+    assert!(!linker.body.contains("_test-merge-bl-source"), "dangling reference to merged-away source remains: {:?}", linker.body);
+
+    let _ = std::fs::remove_file(test_vault_path().join("_test-merge-bl-dest.md"));
+    let _ = std::fs::remove_file(test_vault_path().join("_test-merge-bl-linker.md"));
 }
 
 #[test]
