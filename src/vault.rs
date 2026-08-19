@@ -1,5 +1,6 @@
 use crate::config::Config;
 use crate::parse::{frontmatter, wikilink, tags, sections};
+use crate::parse::frontmatter::FrontmatterValue;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
@@ -7,7 +8,7 @@ use walkdir::WalkDir;
 #[derive(Debug, Clone)]
 pub struct NoteInfo {
     pub path: String,
-    pub frontmatter: HashMap<String, String>,
+    pub frontmatter: HashMap<String, FrontmatterValue>,
     pub body: String,
     pub tags: Vec<String>,
     pub links: Vec<String>,
@@ -158,7 +159,7 @@ impl Vault {
         Ok(joined)
     }
 
-    pub fn create_note(&self, note_path: &str, content: &str, frontmatter_fields: Option<&HashMap<String, String>>) -> anyhow::Result<NoteInfo> {
+    pub fn create_note(&self, note_path: &str, content: &str, frontmatter_fields: Option<&HashMap<String, FrontmatterValue>>) -> anyhow::Result<NoteInfo> {
         let full_path = self.validate_parent(note_path)?;
 
         if full_path.exists() {
@@ -201,7 +202,7 @@ impl Vault {
         self.read_note(note_path)
     }
 
-    pub fn set_frontmatter(&self, note_path: &str, fields: &HashMap<String, String>) -> anyhow::Result<NoteInfo> {
+    pub fn set_frontmatter(&self, note_path: &str, fields: &HashMap<String, FrontmatterValue>) -> anyhow::Result<NoteInfo> {
         let full_path = self.resolve_note_path(note_path)?;
         let content = std::fs::read_to_string(&full_path)?;
         let mut parsed = frontmatter::parse(&content);
@@ -364,7 +365,10 @@ impl Vault {
             if let Ok(content) = std::fs::read_to_string(entry.path()) {
                 let parsed = frontmatter::parse(&content);
                 let matches = filters.iter().all(|(k, v)| {
-                    parsed.frontmatter.get(k).map_or(false, |val| val == v)
+                    parsed.frontmatter.get(k).is_some_and(|val| match val {
+                        FrontmatterValue::String(s) => s == v,
+                        FrontmatterValue::List(items) => items.iter().any(|item| item == v),
+                    })
                 });
 
                 if matches {
@@ -944,17 +948,23 @@ fn reject_dotfile_component(user_path: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn update_frontmatter_tags(fm: &mut HashMap<String, String>, add_tags: &[String], remove_tags: &[String]) -> bool {
+fn update_frontmatter_tags(fm: &mut HashMap<String, FrontmatterValue>, add_tags: &[String], remove_tags: &[String]) -> bool {
     if add_tags.is_empty() && remove_tags.is_empty() {
         return false;
     }
 
     let mut changed = false;
-    let tag_str = fm.entry("tags".to_string()).or_default();
-    let mut tags: Vec<String> = tag_str.split(',')
-        .map(|t| t.trim().trim_start_matches('#').to_string())
-        .filter(|t| !t.is_empty())
-        .collect();
+    let mut tags: Vec<String> = match fm.get("tags") {
+        Some(FrontmatterValue::String(s)) => s.split(',')
+            .map(|t| t.trim().trim_start_matches('#').to_string())
+            .filter(|t| !t.is_empty())
+            .collect(),
+        Some(FrontmatterValue::List(items)) => items.iter()
+            .map(|t| t.trim().trim_start_matches('#').to_string())
+            .filter(|t| !t.is_empty())
+            .collect(),
+        None => Vec::new(),
+    };
 
     for tag in add_tags {
         let tag = tag.trim().trim_start_matches('#').to_string();
@@ -973,7 +983,10 @@ fn update_frontmatter_tags(fm: &mut HashMap<String, String>, add_tags: &[String]
     }
 
     if changed {
-        *tag_str = tags.join(", ");
+        // Always write back as a real YAML sequence, not a comma-joined
+        // scalar — that scalar form is exactly what Obsidian's Properties
+        // panel can't read as a tag list.
+        fm.insert("tags".to_string(), FrontmatterValue::List(tags));
     }
 
     changed
@@ -1006,7 +1019,7 @@ fn extract_significant_words(text: &str, max_words: usize) -> Vec<String> {
     words.into_iter().map(|(w, _)| w).collect()
 }
 
-fn build_note_content(body: &str, frontmatter_fields: Option<&HashMap<String, String>>) -> String {
+fn build_note_content(body: &str, frontmatter_fields: Option<&HashMap<String, FrontmatterValue>>) -> String {
     match frontmatter_fields {
         Some(fields) if !fields.is_empty() => {
             let fm_str = serialize_frontmatter(fields);
@@ -1016,10 +1029,21 @@ fn build_note_content(body: &str, frontmatter_fields: Option<&HashMap<String, St
     }
 }
 
-fn serialize_frontmatter(fields: &HashMap<String, String>) -> String {
+fn serialize_frontmatter(fields: &HashMap<String, FrontmatterValue>) -> String {
     let mut out = String::new();
     for (k, v) in fields {
-        out.push_str(&format!("{}: {}\n", k, v));
+        match v {
+            FrontmatterValue::String(s) => out.push_str(&format!("{}: {}\n", k, s)),
+            FrontmatterValue::List(items) if items.is_empty() => {
+                out.push_str(&format!("{}: []\n", k));
+            }
+            FrontmatterValue::List(items) => {
+                out.push_str(&format!("{}:\n", k));
+                for item in items {
+                    out.push_str(&format!("  - {}\n", item));
+                }
+            }
+        }
     }
     out
 }

@@ -1,3 +1,4 @@
+use obsidian_mcp::parse::frontmatter::FrontmatterValue;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -85,7 +86,18 @@ fn test_tag_extraction() {
 #[test]
 fn test_tag_extraction_from_frontmatter() {
     let mut fm = HashMap::new();
-    fm.insert("tags".to_string(), "alpha, beta".to_string());
+    fm.insert("tags".to_string(), FrontmatterValue::String("alpha, beta".to_string()));
+    let tags = obsidian_mcp::parse::tags::extract_tags_from_frontmatter(&fm);
+    assert!(tags.contains("alpha"));
+    assert!(tags.contains("beta"));
+}
+
+#[test]
+fn test_tag_extraction_from_frontmatter_list() {
+    // A real YAML sequence (`tags: [alpha, beta]`) must yield one tag per
+    // element, without comma-splitting each element as the scalar form does.
+    let mut fm = HashMap::new();
+    fm.insert("tags".to_string(), FrontmatterValue::List(vec!["alpha".to_string(), "beta".to_string()]));
     let tags = obsidian_mcp::parse::tags::extract_tags_from_frontmatter(&fm);
     assert!(tags.contains("alpha"));
     assert!(tags.contains("beta"));
@@ -151,7 +163,7 @@ fn test_vault_create_and_read() {
     let _ = std::fs::remove_file(test_vault_path().join("_test-created.md"));
 
     let mut fm = HashMap::new();
-    fm.insert("status".to_string(), "new".to_string());
+    fm.insert("status".to_string(), FrontmatterValue::String("new".to_string()));
 
     let note = vault.create_note("_test-created.md", "Created by test", Some(&fm)).unwrap();
     assert_eq!(note.frontmatter.get("status").unwrap(), "new");
@@ -163,6 +175,46 @@ fn test_vault_create_and_read() {
 
     // Cleanup
     let _ = std::fs::remove_file(test_vault_path().join("_test-created.md"));
+}
+
+#[test]
+fn test_vault_create_note_writes_array_frontmatter_as_yaml_sequence() {
+    // Regression test: `{"tags": ["mba", "index", "home"]}` used to be
+    // rejected by the schema (forced to a string), and even a
+    // caller-joined `"mba, index, home"` string got written as a scalar,
+    // not a YAML sequence — which Obsidian's Properties panel reads as one
+    // invalid tag literal full of commas.
+    let vault = obsidian_mcp::vault::Vault::new(test_config());
+    let _ = std::fs::remove_file(test_vault_path().join("_test-array-fm.md"));
+
+    let mut fm = HashMap::new();
+    fm.insert("tags".to_string(), FrontmatterValue::List(vec![
+        "mba".to_string(), "index".to_string(), "home".to_string(),
+    ]));
+
+    let note = vault.create_note("_test-array-fm.md", "Body", Some(&fm)).unwrap();
+    assert_eq!(
+        note.frontmatter.get("tags"),
+        Some(&FrontmatterValue::List(vec!["mba".to_string(), "index".to_string(), "home".to_string()])),
+    );
+
+    // The file on disk must contain a real YAML sequence, not a
+    // comma-joined scalar.
+    let raw = std::fs::read_to_string(test_vault_path().join("_test-array-fm.md")).unwrap();
+    assert!(raw.contains("tags:\n  - mba\n  - index\n  - home\n"), "expected a YAML sequence, got:\n{}", raw);
+    assert!(!raw.contains("tags: mba, index, home"), "tags were written as a joined scalar, not a sequence:\n{}", raw);
+
+    // And it round-trips back to the same list on read.
+    let read_back = vault.read_note("_test-array-fm.md").unwrap();
+    assert_eq!(
+        read_back.frontmatter.get("tags"),
+        Some(&FrontmatterValue::List(vec!["mba".to_string(), "index".to_string(), "home".to_string()])),
+    );
+    assert!(read_back.tags.contains(&"mba".to_string()));
+    assert!(read_back.tags.contains(&"index".to_string()));
+    assert!(read_back.tags.contains(&"home".to_string()));
+
+    let _ = std::fs::remove_file(test_vault_path().join("_test-array-fm.md"));
 }
 
 #[test]
@@ -241,7 +293,7 @@ fn test_vault_set_frontmatter() {
     let _ = vault.create_note("_test-fm.md", "Test content", None);
 
     let mut fm = HashMap::new();
-    fm.insert("priority".to_string(), "high".to_string());
+    fm.insert("priority".to_string(), FrontmatterValue::String("high".to_string()));
     let updated = vault.set_frontmatter("_test-fm.md", &fm).unwrap();
     assert_eq!(updated.frontmatter.get("priority").unwrap(), "high");
 
@@ -367,7 +419,9 @@ fn test_vault_bulk_tag() {
     assert_eq!(count, 1);
 
     let note = vault.read_note("_test-bt-note.md").unwrap();
-    assert_eq!(note.frontmatter.get("tags").unwrap(), "new-tag");
+    // bulk_tag now writes tags as a real YAML sequence, not a comma-joined
+    // scalar (see test_vault_create_note_writes_array_frontmatter_as_yaml_sequence).
+    assert_eq!(note.frontmatter.get("tags"), Some(&FrontmatterValue::List(vec!["new-tag".to_string()])));
 
     let _ = std::fs::remove_file(test_vault_path().join("_test-bt-note.md"));
 }
@@ -432,7 +486,10 @@ fn test_bulk_tag_remove_is_case_insensitive() {
     vault.bulk_tag("bt-case-taggable", &[], &["project".to_string()]).unwrap();
 
     let note = vault.read_note("_test-bt-case-note.md").unwrap();
-    assert!(note.frontmatter.get("tags").map_or(true, |t| t.is_empty()));
+    assert!(note.frontmatter.get("tags").map_or(true, |t| match t {
+        FrontmatterValue::String(s) => s.is_empty(),
+        FrontmatterValue::List(items) => items.is_empty(),
+    }));
 
     let _ = std::fs::remove_file(test_vault_path().join("_test-bt-case-note.md"));
 }

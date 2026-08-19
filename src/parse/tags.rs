@@ -133,11 +133,20 @@ pub fn remove_inline_tags(body: &str, remove_tags: &[String]) -> (String, bool) 
     (result, true)
 }
 
-pub fn extract_tags_from_frontmatter(frontmatter: &std::collections::HashMap<String, String>) -> HashSet<String> {
+pub fn extract_tags_from_frontmatter(frontmatter: &std::collections::HashMap<String, super::frontmatter::FrontmatterValue>) -> HashSet<String> {
+    use super::frontmatter::FrontmatterValue;
+
     let mut tags = HashSet::new();
     for key in ["tags", "tag"] {
-        if let Some(tag_str) = frontmatter.get(key) {
-            for tag in tag_str.split(',') {
+        if let Some(value) = frontmatter.get(key) {
+            // A scalar `tags: a, b` is still comma-split (pre-existing
+            // vaults may have it written that way); a real YAML sequence
+            // `tags: [a, b]` already has one tag per element.
+            let raw_tags: Vec<String> = match value {
+                FrontmatterValue::String(s) => s.split(',').map(|t| t.to_string()).collect(),
+                FrontmatterValue::List(items) => items.clone(),
+            };
+            for tag in raw_tags {
                 let tag = tag.trim().trim_start_matches('#').to_string();
                 if !tag.is_empty() {
                     tags.insert(tag);
@@ -148,7 +157,7 @@ pub fn extract_tags_from_frontmatter(frontmatter: &std::collections::HashMap<Str
     tags
 }
 
-pub fn all_tags(content: &str, frontmatter: &std::collections::HashMap<String, String>) -> HashSet<String> {
+pub fn all_tags(content: &str, frontmatter: &std::collections::HashMap<String, super::frontmatter::FrontmatterValue>) -> HashSet<String> {
     let mut tags = extract_tags(content);
     tags.extend(extract_tags_from_frontmatter(frontmatter));
     tags

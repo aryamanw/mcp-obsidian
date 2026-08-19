@@ -1,3 +1,4 @@
+use crate::parse::frontmatter::FrontmatterValue;
 use rmcp::schemars;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -46,8 +47,8 @@ pub struct CreateNoteRequest {
     pub path: String,
     #[schemars(description = "Note content (markdown)")]
     pub content: Option<String>,
-    #[schemars(description = "Initial frontmatter fields")]
-    pub frontmatter: Option<HashMap<String, String>>,
+    #[schemars(description = "Initial frontmatter fields. Each value is either a scalar string or an array of strings; array values (use for list-type properties like tags, aliases, cssclasses) are written as a real YAML sequence")]
+    pub frontmatter: Option<HashMap<String, FrontmatterValue>>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -64,8 +65,8 @@ pub struct UpdateNoteRequest {
 pub struct SetFrontmatterRequest {
     #[schemars(description = "Path to the note")]
     pub path: String,
-    #[schemars(description = "Frontmatter fields to set (merges with existing)")]
-    pub fields: HashMap<String, String>,
+    #[schemars(description = "Frontmatter fields to set (merges with existing). Each value is either a scalar string or an array of strings; array values (use for list-type properties like tags, aliases, cssclasses) are written as a real YAML sequence")]
+    pub fields: HashMap<String, FrontmatterValue>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
