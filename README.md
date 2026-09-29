@@ -39,6 +39,14 @@ A high-performance [Model Context Protocol](https://modelcontextprotocol.io) ser
 - Connected components (community detection)
 - Shortest path between any two notes
 
+**Plugin Support**
+- **Excalidraw**: read drawings (including compressed ones), create new drawings, and add labeled shapes and bound arrows
+- **Advanced Tables**: read markdown tables as structured data; write and extend tables with Advanced Tables-style formatting
+- **Kanban**: read boards, create boards, add cards, and move/edit/check/archive cards
+- **Mermaid**: list, insert, and replace ```` ```mermaid ```` diagrams, with diagram-type validation
+- **Charts**: build Obsidian Charts ```` ```chart ```` blocks from labels and data series
+- **Canvas / Advanced Canvas**: read, create, and edit `.canvas` files, including Advanced Canvas `styleAttributes` (node shapes, borders, edge path and arrow styles)
+
 ## Prerequisites
 
 - An existing [Obsidian](https://obsidian.md) vault
@@ -201,6 +209,44 @@ Windows:
 | `graph_path` | Shortest path between two notes |
 
 > **Note:** Graph tools rely on Obsidian's built-in `graph.json`. Open Obsidian at least once to generate it.
+
+### Excalidraw
+| Tool | Description |
+|---|---|
+| `read_drawing` | Read a drawing's text elements, embedded files, and a summary of every element (handles compressed drawings) |
+| `create_drawing` | Create a `.excalidraw.md` drawing from simple shapes, text, and arrows |
+| `add_drawing_elements` | Add elements to an existing drawing; arrows can bind to existing elements by id |
+
+### Tables (Advanced Tables)
+| Tool | Description |
+|---|---|
+| `read_tables` | Read every markdown table in a note as headers, alignments, and rows |
+| `write_table` | Replace a table by index, or insert a new one under a heading or at the end |
+| `add_table_rows` | Append rows to an existing table and reformat it |
+
+### Kanban
+| Tool | Description |
+|---|---|
+| `read_kanban` | Read a board's lanes, cards, and archive |
+| `create_kanban` | Create a new board with lanes and optional initial cards |
+| `add_kanban_card` | Add a card to the top or bottom of a lane |
+| `update_kanban_card` | Move, edit, check/uncheck, or archive a card |
+
+### Diagrams & Charts (Mermaid, Charts)
+| Tool | Description |
+|---|---|
+| `list_code_blocks` | List fenced code blocks in a note, optionally by language (`mermaid`, `chart`, ...) |
+| `write_mermaid_diagram` | Insert or replace a Mermaid diagram |
+| `write_chart` | Insert or replace an Obsidian Charts chart (bar, line, pie, doughnut, radar, polarArea) |
+
+### Canvas (Canvas / Advanced Canvas)
+| Tool | Description |
+|---|---|
+| `read_canvas` | Read a `.canvas` file's nodes and edges |
+| `create_canvas` | Create a canvas; nodes without coordinates are auto-placed |
+| `edit_canvas` | Add, update (by id), or remove nodes and edges |
+
+> **Note:** Plugin tools write each plugin's on-disk format directly and don't need Obsidian to be running. `add_drawing_elements` rewrites a drawing's scene as uncompressed JSON; if compression is enabled, the Excalidraw plugin compresses it again on its next save. `list_vault` also lists `.canvas` and `.excalidraw` files.
 
 ## Security
 

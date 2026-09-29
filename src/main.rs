@@ -574,6 +574,317 @@ impl ObsidianMcp {
             })
         })
     }
+
+    // ===== Excalidraw Tools =====
+
+    #[tool(description = "Read an Excalidraw drawing: its text elements, embedded files, element links, and a summary of every shape (id, type, position, size, text/label, arrow from/to). Handles compressed drawings.")]
+    fn read_drawing(
+        &self,
+        Parameters(req): Parameters<tools::excalidraw::ReadDrawingRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        respond(self.vault.read_drawing(&req.path), |d| {
+            let pairs = |v: &[(String, String)], k: &str, val: &str| -> Vec<serde_json::Value> {
+                v.iter().map(|(a, b)| serde_json::json!({ k: a, val: b })).collect()
+            };
+            let elements = parse::excalidraw::summarize(&d.scene);
+            let mut out = serde_json::json!({
+                "path": d.path,
+                "compressed": d.compressed,
+                "text_elements": pairs(&d.text_elements, "id", "text"),
+                "embedded_files": pairs(&d.embedded_files, "id", "file"),
+                "element_links": pairs(&d.element_links, "id", "link"),
+                "element_count": elements.len(),
+                "elements": elements,
+            });
+            if req.include_raw.unwrap_or(false) {
+                out["scene"] = d.scene;
+            }
+            out
+        })
+    }
+
+    #[tool(description = "Create a new Excalidraw drawing (.excalidraw.md) from simple elements: rectangles, ellipses, diamonds, text, and arrows/lines. Shapes with 'text' get a centered label; arrows with 'from'/'to' element ids are bound between those shapes.")]
+    fn create_drawing(
+        &self,
+        Parameters(req): Parameters<tools::excalidraw::CreateDrawingRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        respond(self.vault.create_drawing(&req.path, &req.elements), |(path, count)| {
+            serde_json::json!({
+                "path": path,
+                "element_count": count,
+                "message": "Drawing created successfully",
+            })
+        })
+    }
+
+    #[tool(description = "Add elements to an existing Excalidraw drawing. Arrows can connect to existing elements by id (see read_drawing).")]
+    fn add_drawing_elements(
+        &self,
+        Parameters(req): Parameters<tools::excalidraw::AddDrawingElementsRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        respond(self.vault.add_drawing_elements(&req.path, &req.elements), |(path, ids)| {
+            serde_json::json!({
+                "path": path,
+                "added_ids": ids,
+                "message": format!("Added {} element(s)", ids.len()),
+            })
+        })
+    }
+
+    // ===== Table Tools (Advanced Tables) =====
+
+    #[tool(description = "Read every markdown table in a note as structured data: headers, column alignments, rows, and the heading each table sits under.")]
+    fn read_tables(
+        &self,
+        Parameters(req): Parameters<tools::tables::ReadTablesRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        respond(self.vault.read_tables(&req.path), |tables| {
+            let results: Vec<serde_json::Value> = tables.iter().enumerate().map(|(i, t)| {
+                serde_json::json!({
+                    "index": i,
+                    "heading": t.heading,
+                    "headers": t.headers,
+                    "alignments": t.alignments,
+                    "rows": t.rows,
+                    "row_count": t.rows.len(),
+                })
+            }).collect();
+            serde_json::json!({
+                "tables": results,
+                "count": results.len(),
+            })
+        })
+    }
+
+    #[tool(description = "Write a markdown table, formatted the way Advanced Tables formats it (aligned, padded columns). Replaces an existing table by index, or inserts a new one under a heading or at the end of the note.")]
+    fn write_table(
+        &self,
+        Parameters(req): Parameters<tools::tables::WriteTableRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let result = self.vault.write_table(
+            &req.path, &req.headers, &req.rows, req.alignments.as_deref(), req.table_index, req.heading.as_deref(),
+        );
+        respond(result, |(path, index)| {
+            serde_json::json!({
+                "path": path,
+                "table_index": index,
+                "message": "Table written successfully",
+            })
+        })
+    }
+
+    #[tool(description = "Append rows to an existing markdown table and reformat it (Advanced Tables style).")]
+    fn add_table_rows(
+        &self,
+        Parameters(req): Parameters<tools::tables::AddTableRowsRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        respond(self.vault.add_table_rows(&req.path, req.table_index, &req.rows), |(path, row_count)| {
+            serde_json::json!({
+                "path": path,
+                "table_index": req.table_index,
+                "row_count": row_count,
+                "message": format!("Added {} row(s)", req.rows.len()),
+            })
+        })
+    }
+
+    // ===== Kanban Tools =====
+
+    #[tool(description = "Read a Kanban plugin board: its lanes (in order) with their cards and checked state, plus archived cards. Find boards with search_by_frontmatter {\"kanban-plugin\": \"board\"}.")]
+    fn read_kanban(
+        &self,
+        Parameters(req): Parameters<tools::kanban::ReadKanbanRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        respond(self.vault.read_kanban(&req.path), |(path, board)| board_json(&path, &board))
+    }
+
+    #[tool(description = "Create a new Kanban plugin board with the given lanes and optional initial cards.")]
+    fn create_kanban(
+        &self,
+        Parameters(req): Parameters<tools::kanban::CreateKanbanRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let lanes: Vec<vault::NewLane> = req.lanes.into_iter().map(|l| vault::NewLane {
+            title: l.title,
+            complete: l.complete.unwrap_or(false),
+            cards: l.cards.unwrap_or_default(),
+        }).collect();
+        respond(self.vault.create_kanban(&req.path, &lanes), |(path, board)| board_json(&path, &board))
+    }
+
+    #[tool(description = "Add a card to a lane of a Kanban plugin board.")]
+    fn add_kanban_card(
+        &self,
+        Parameters(req): Parameters<tools::kanban::AddKanbanCardRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let at_top = match req.position.as_deref() {
+            None | Some("bottom") => false,
+            Some("top") => true,
+            Some(other) => return Ok(CallToolResult::error(vec![Content::text(
+                format!("Invalid position: {} (use 'top' or 'bottom')", other),
+            )])),
+        };
+        respond(
+            self.vault.add_kanban_card(&req.path, &req.lane, &req.text, req.checked, at_top),
+            |(path, board)| board_json(&path, &board),
+        )
+    }
+
+    #[tool(description = "Move, edit, check/uncheck, or archive a card on a Kanban plugin board. The card is found by exact text or a unique substring. Moving into or out of a 'complete' lane checks/unchecks the card unless 'checked' is given.")]
+    fn update_kanban_card(
+        &self,
+        Parameters(req): Parameters<tools::kanban::UpdateKanbanCardRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let update = vault::CardUpdate {
+            to_lane: req.to_lane.as_deref(),
+            new_text: req.new_text.as_deref(),
+            checked: req.checked,
+            archive: req.archive.unwrap_or(false),
+        };
+        respond(
+            self.vault.update_kanban_card(&req.path, &req.card, req.lane.as_deref(), update),
+            |(path, board)| board_json(&path, &board),
+        )
+    }
+
+    // ===== Diagram & Chart Tools (Mermaid, Charts) =====
+
+    #[tool(description = "List fenced code blocks in a note, optionally filtered by language — e.g. 'mermaid' for Mermaid diagrams or 'chart' for Obsidian Charts. Each block's index is what write_mermaid_diagram/write_chart use to replace it.")]
+    fn list_code_blocks(
+        &self,
+        Parameters(req): Parameters<tools::diagrams::ListCodeBlocksRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        respond(self.vault.list_code_blocks(&req.path, req.language.as_deref()), |blocks| {
+            let results: Vec<serde_json::Value> = blocks.iter().enumerate().map(|(i, b)| {
+                serde_json::json!({
+                    "index": i,
+                    "language": b.language,
+                    "content": b.content,
+                })
+            }).collect();
+            serde_json::json!({
+                "blocks": results,
+                "count": results.len(),
+            })
+        })
+    }
+
+    #[tool(description = "Insert or replace a Mermaid diagram (```mermaid block) in a note. Validates that the diagram starts with a known Mermaid diagram type (flowchart, sequenceDiagram, classDiagram, stateDiagram-v2, erDiagram, gantt, pie, mindmap, timeline, gitGraph, ...).")]
+    fn write_mermaid_diagram(
+        &self,
+        Parameters(req): Parameters<tools::diagrams::WriteMermaidRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let Some(diagram_type) = parse::codeblocks::mermaid_diagram_type(&req.diagram) else {
+            return Ok(CallToolResult::error(vec![Content::text(format!(
+                "Diagram must start with a Mermaid diagram type (one of: {})",
+                parse::codeblocks::MERMAID_DIAGRAM_TYPES.join(", "),
+            ))]));
+        };
+        let result = self.vault.write_code_block(&req.path, "mermaid", &req.diagram, req.index, req.heading.as_deref());
+        respond(result, |(path, index)| {
+            serde_json::json!({
+                "path": path,
+                "index": index,
+                "diagram_type": diagram_type,
+                "message": "Mermaid diagram written successfully",
+            })
+        })
+    }
+
+    #[tool(description = "Insert or replace an Obsidian Charts plugin chart (```chart block) built from labels and data series: bar, line, pie, doughnut, radar, or polarArea.")]
+    fn write_chart(
+        &self,
+        Parameters(req): Parameters<tools::diagrams::WriteChartRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let mut options = serde_json::Map::new();
+        let typed = [
+            ("width", req.width.map(serde_json::Value::from)),
+            ("beginAtZero", req.begin_at_zero.map(serde_json::Value::from)),
+            ("stacked", req.stacked.map(serde_json::Value::from)),
+            ("fill", req.fill.map(serde_json::Value::from)),
+            ("tension", req.tension.map(serde_json::Value::from)),
+        ];
+        for (key, value) in typed {
+            if let Some(v) = value {
+                options.insert(key.to_string(), v);
+            }
+        }
+        options.extend(req.extra_options.unwrap_or_default());
+
+        let series: Vec<parse::codeblocks::ChartSeries> = req.series.iter()
+            .map(|s| parse::codeblocks::ChartSeries { title: s.title.as_deref(), data: &s.data })
+            .collect();
+        let result = parse::codeblocks::build_chart_yaml(&req.chart_type, &req.labels, &series, &options)
+            .and_then(|yaml| self.vault.write_code_block(&req.path, "chart", &yaml, req.index, req.heading.as_deref()));
+        respond(result, |(path, index)| {
+            serde_json::json!({
+                "path": path,
+                "index": index,
+                "message": "Chart written successfully",
+            })
+        })
+    }
+
+    // ===== Canvas Tools (Canvas / Advanced Canvas) =====
+
+    #[tool(description = "Read an Obsidian .canvas file: all nodes (text, file, link, group) and edges, including Advanced Canvas styleAttributes.")]
+    fn read_canvas(
+        &self,
+        Parameters(req): Parameters<tools::canvas::ReadCanvasRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        respond(self.vault.read_canvas(&req.path), |(path, doc)| {
+            let count = |k: &str| doc[k].as_array().map_or(0, Vec::len);
+            serde_json::json!({
+                "path": path,
+                "node_count": count("nodes"),
+                "edge_count": count("edges"),
+                "nodes": doc["nodes"],
+                "edges": doc["edges"],
+            })
+        })
+    }
+
+    #[tool(description = "Create a new Obsidian .canvas file with nodes and edges. Nodes without x/y are auto-placed. Supports Advanced Canvas styleAttributes (node shapes/borders, edge path/arrow styles).")]
+    fn create_canvas(
+        &self,
+        Parameters(req): Parameters<tools::canvas::CreateCanvasRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let nodes = req.nodes.unwrap_or_default();
+        let edges = req.edges.unwrap_or_default();
+        respond(self.vault.create_canvas(&req.path, &nodes, &edges), |(path, summary)| {
+            serde_json::json!({
+                "path": path,
+                "created": summary.created,
+                "message": "Canvas created successfully",
+            })
+        })
+    }
+
+    #[tool(description = "Edit an Obsidian .canvas file: add or update nodes/edges (matched by id; only given fields change) and remove nodes/edges by id. Supports Advanced Canvas styleAttributes.")]
+    fn edit_canvas(
+        &self,
+        Parameters(req): Parameters<tools::canvas::EditCanvasRequest>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let nodes = req.nodes.unwrap_or_default();
+        let edges = req.edges.unwrap_or_default();
+        let remove = req.remove_ids.unwrap_or_default();
+        respond(self.vault.edit_canvas(&req.path, &nodes, &edges, &remove), |(path, summary)| {
+            serde_json::json!({
+                "path": path,
+                "created": summary.created,
+                "updated": summary.updated,
+                "removed": summary.removed,
+                "message": "Canvas updated successfully",
+            })
+        })
+    }
+}
+
+fn board_json(path: &str, board: &parse::kanban::Board) -> serde_json::Value {
+    serde_json::json!({
+        "path": path,
+        "lanes": board.lanes,
+        "archive": board.archive.as_ref().map(|a| &a.cards),
+    })
 }
 
 #[tool_handler]
@@ -581,7 +892,7 @@ impl ServerHandler for ObsidianMcp {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_instructions(
-                "Obsidian vault management MCP server. Read, write, search notes, manage links, templates, and graph analysis.",
+                "Obsidian vault management MCP server. Read, write, search notes, manage links, templates, and graph analysis. Also supports plugin formats: Excalidraw drawings, Advanced Tables (markdown tables), Kanban boards, Mermaid diagrams, Obsidian Charts, and Canvas / Advanced Canvas files.",
             )
     }
 }

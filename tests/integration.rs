@@ -908,3 +908,336 @@ fn test_vault_trash_note_collision() {
     let _ = std::fs::remove_file(trash_dir.join("_test-trash-collide.md"));
     let _ = std::fs::remove_file(trash_dir.join("_test-trash-collide (1).md"));
 }
+
+// ===== Plugin formats =====
+
+use obsidian_mcp::parse::{canvas, codeblocks, excalidraw, kanban, tables};
+
+fn write_fixture(name: &str, content: &str) {
+    std::fs::write(test_vault_path().join(name), content).unwrap();
+}
+
+fn remove_fixture(name: &str) {
+    let _ = std::fs::remove_file(test_vault_path().join(name));
+}
+
+#[test]
+fn test_code_blocks_extract_and_nested_fence() {
+    let body = "intro\n```mermaid\ngraph TD\n  A-->B\n```\n\n````md\n```js\nx\n```\n````\n~~~chart\ntype: bar\n~~~\n";
+    let blocks = codeblocks::extract_code_blocks(body);
+    assert_eq!(blocks.len(), 3);
+    assert_eq!(blocks[0].language, "mermaid");
+    assert_eq!(blocks[0].content, "graph TD\n  A-->B\n");
+    assert_eq!(blocks[1].language, "md");
+    assert!(blocks[1].content.contains("```js"));
+    assert_eq!(blocks[2].language, "chart");
+    assert_eq!(&body[blocks[0].start..blocks[0].end], "```mermaid\ngraph TD\n  A-->B\n```\n");
+
+    // Content containing ``` gets a longer fence so it can't close early.
+    let rendered = codeblocks::render_code_block("md", "```js\nx\n```");
+    assert!(rendered.starts_with("````md\n"));
+    assert_eq!(codeblocks::extract_code_blocks(&rendered)[0].content, "```js\nx\n```\n");
+}
+
+#[test]
+fn test_mermaid_diagram_type_detection() {
+    assert_eq!(codeblocks::mermaid_diagram_type("flowchart LR\n A-->B"), Some("flowchart"));
+    assert_eq!(codeblocks::mermaid_diagram_type("%%{init: {}}%%\n\nsequenceDiagram\n A->>B: hi"), Some("sequenceDiagram"));
+    assert_eq!(codeblocks::mermaid_diagram_type("---\ntitle: T\n---\ngraph TD"), Some("graph"));
+    assert_eq!(codeblocks::mermaid_diagram_type("pie title Pets\n \"Dogs\": 3"), Some("pie"));
+    assert_eq!(codeblocks::mermaid_diagram_type("A --> B"), None);
+}
+
+#[test]
+fn test_chart_yaml_builder() {
+    let labels = vec!["Mon".to_string(), "Tue: late".to_string()];
+    let data = [1.0, 2.5];
+    let series = [codeblocks::ChartSeries { title: Some("Hours"), data: &data }];
+    let mut opts = serde_json::Map::new();
+    opts.insert("width".into(), serde_json::json!("80%"));
+    let yaml = codeblocks::build_chart_yaml("bar", &labels, &series, &opts).unwrap();
+    assert_eq!(yaml, "type: bar\nlabels: [\"Mon\",\"Tue: late\"]\nseries:\n  - title: \"Hours\"\n    data: [1.0,2.5]\nwidth: \"80%\"\n");
+
+    let bad = [codeblocks::ChartSeries { title: None, data: &[1.0] }];
+    assert!(codeblocks::build_chart_yaml("bar", &labels, &bad, &opts).is_err());
+    assert!(codeblocks::build_chart_yaml("scatter", &labels, &series, &opts).is_err());
+}
+
+#[test]
+fn test_tables_parse_and_format() {
+    let body = "## Budget\n\n| Item | Cost |\n|:-----|-----:|\n| [[Food\\|Groceries]] | 10 |\n| Rent |\n\n```\n| not | a |\n|---|---|\n```\n";
+    let found = tables::extract_tables(body);
+    assert_eq!(found.len(), 1, "tables inside code blocks are ignored");
+    let t = &found[0];
+    assert_eq!(t.headers, vec!["Item", "Cost"]);
+    assert_eq!(t.alignments, vec![tables::Alignment::Left, tables::Alignment::Right]);
+    assert_eq!(t.rows, vec![vec!["[[Food\\|Groceries]]".to_string(), "10".to_string()], vec!["Rent".to_string(), "".to_string()]]);
+    assert_eq!(t.heading.as_deref(), Some("## Budget"));
+
+    let formatted = tables::format_table(&t.headers, &t.alignments, &t.rows);
+    assert_eq!(
+        formatted,
+        "| Item                | Cost |\n| :------------------ | ---: |\n| [[Food\\|Groceries]] |   10 |\n| Rent                |      |\n"
+    );
+    // A formatted table parses back to the same data.
+    assert_eq!(tables::extract_tables(&formatted)[0].rows, t.rows);
+    // Raw pipes and newlines in new cells are escaped.
+    assert_eq!(tables::escape_cell("a|b\nc"), "a\\|b<br>c");
+}
+
+#[test]
+fn test_vault_tables_write_and_add_rows() {
+    let vault = obsidian_mcp::vault::Vault::new(test_config());
+    let name = "_test-tables.md";
+    write_fixture(name, "---\nstatus: draft\n---\n# Doc\n\nIntro.\n\n## Other\n\nText.\n");
+
+    let (_, idx) = vault.write_table(name, &["A".into(), "B".into()], &[vec!["1".into(), "2".into()]], None, None, Some("## Data")).unwrap();
+    assert_eq!(idx, 0);
+    vault.add_table_rows(name, 0, &[vec!["3".into(), "4".into()]]).unwrap();
+
+    let t = &vault.read_tables(name).unwrap()[0];
+    assert_eq!(t.rows.len(), 2);
+    assert_eq!(t.heading.as_deref(), Some("## Data"));
+
+    // Replace keeps the section structure and frontmatter intact.
+    vault.write_table(name, &["X".into()], &[vec!["y".into()]], None, Some(0), None).unwrap();
+    let content = std::fs::read_to_string(test_vault_path().join(name)).unwrap();
+    assert!(content.starts_with("---\nstatus: draft\n---\n"));
+    assert!(content.contains("## Other\n\nText."));
+    assert!(content.contains("| X   |\n| --- |\n| y   |\n"));
+    assert!(vault.write_table(name, &["X".into()], &[], None, Some(5), None).is_err());
+
+    remove_fixture(name);
+}
+
+#[test]
+fn test_vault_write_mermaid_and_chart_blocks() {
+    let vault = obsidian_mcp::vault::Vault::new(test_config());
+    let name = "_test-diagrams.md";
+    write_fixture(name, "# Doc\n\n## Diagrams\n\nSee below.\n\n## Notes\n\nEnd.\n");
+
+    let (_, i) = vault.write_code_block(name, "mermaid", "graph TD\n A-->B", None, Some("## Diagrams")).unwrap();
+    assert_eq!(i, 0);
+    let (_, i) = vault.write_code_block(name, "mermaid", "graph TD\n C-->D", None, None).unwrap();
+    assert_eq!(i, 1);
+    vault.write_code_block(name, "mermaid", "graph LR\n A-->Z", Some(0), None).unwrap();
+
+    let blocks = vault.list_code_blocks(name, Some("mermaid")).unwrap();
+    assert_eq!(blocks.len(), 2);
+    assert_eq!(blocks[0].content, "graph LR\n A-->Z\n");
+    let content = std::fs::read_to_string(test_vault_path().join(name)).unwrap();
+    let diagrams_at = content.find("## Diagrams").unwrap();
+    let block_at = content.find("graph LR").unwrap();
+    let notes_at = content.find("## Notes").unwrap();
+    assert!(diagrams_at < block_at && block_at < notes_at, "block inserted inside its section");
+
+    assert!(vault.write_code_block(name, "chart", "type: bar", Some(0), None).is_err());
+    remove_fixture(name);
+}
+
+const SAMPLE_BOARD: &str = "---\n\nkanban-plugin: board\n\n---\n\n## To Do\n\n- [ ] Write spec\n- [ ] Review [[Plan]]\n\tsecond line\n\n\n## Done\n\n**Complete**\n- [x] Setup\n\n\n***\n\n## Archive\n\n- [x] Old thing\n\n%% kanban:settings\n```\n{\"kanban-plugin\":\"board\",\"list-collapse\":[false,false]}\n```\n%%";
+
+#[test]
+fn test_kanban_parse_and_render_round_trip() {
+    let body = obsidian_mcp::parse::frontmatter::split_raw(SAMPLE_BOARD).1;
+    let board = kanban::parse(body);
+    assert_eq!(board.lanes.len(), 2);
+    assert_eq!(board.lanes[0].title, "To Do");
+    assert_eq!(board.lanes[0].cards[1].text, "Review [[Plan]]\nsecond line");
+    assert!(board.lanes[1].complete);
+    assert!(board.lanes[1].cards[0].checked);
+    assert_eq!(board.archive.as_ref().unwrap().cards[0].text, "Old thing");
+    assert!(board.settings.as_ref().unwrap().contains("list-collapse"));
+
+    let rendered = kanban::render(&board);
+    assert_eq!(kanban::parse(&rendered), board);
+    assert!(rendered.contains("- [ ] Review [[Plan]]\n\tsecond line\n"));
+    assert!(rendered.contains("***\n\n## Archive"));
+}
+
+#[test]
+fn test_vault_kanban_create_add_move_archive() {
+    let vault = obsidian_mcp::vault::Vault::new(test_config());
+    let name = "_test-board.md";
+    remove_fixture(name);
+
+    let lanes = vec![
+        obsidian_mcp::vault::NewLane { title: "Backlog".into(), complete: false, cards: vec!["Plan trip".into()] },
+        obsidian_mcp::vault::NewLane { title: "Done".into(), complete: true, cards: vec![] },
+    ];
+    vault.create_kanban("_test-board", &lanes).unwrap();
+    assert!(vault.create_kanban("_test-board", &lanes).is_err(), "won't overwrite");
+
+    vault.add_kanban_card(name, "backlog", "Book hotel", None, true).unwrap();
+    let (_, board) = vault.read_kanban(name).unwrap();
+    assert_eq!(board.lanes[0].cards[0].text, "Book hotel");
+
+    // Moving into a complete lane checks the card.
+    let update = obsidian_mcp::vault::CardUpdate { to_lane: Some("Done"), ..Default::default() };
+    let (_, board) = vault.update_kanban_card(name, "hotel", None, update).unwrap();
+    assert_eq!(board.lanes[1].cards[0], kanban::Card { text: "Book hotel".into(), checked: true });
+
+    let update = obsidian_mcp::vault::CardUpdate { archive: true, ..Default::default() };
+    let (_, board) = vault.update_kanban_card(name, "Plan trip", None, update).unwrap();
+    assert!(board.lanes[0].cards.is_empty());
+    assert_eq!(board.archive.unwrap().cards[0].text, "Plan trip");
+
+    let missing = obsidian_mcp::vault::CardUpdate { checked: Some(true), ..Default::default() };
+    assert!(vault.update_kanban_card(name, "nope", None, missing).is_err());
+    assert!(vault.read_kanban("note1").is_err(), "non-board notes are rejected");
+
+    let content = std::fs::read_to_string(test_vault_path().join(name)).unwrap();
+    assert!(content.starts_with("---\n\nkanban-plugin: board\n\n---\n\n## Backlog"));
+    assert!(content.contains("%% kanban:settings"));
+    remove_fixture(name);
+}
+
+#[test]
+fn test_excalidraw_build_elements_with_labels_and_bindings() {
+    let specs: Vec<excalidraw::ElementSpec> = serde_json::from_value(serde_json::json!([
+        { "id": "a", "type": "rectangle", "x": 0, "y": 0, "width": 100, "height": 50, "text": "Start" },
+        { "id": "b", "type": "ellipse", "x": 300, "y": 0, "width": 100, "height": 50 },
+        { "type": "arrow", "from": "a", "to": "b", "text": "next" },
+    ])).unwrap();
+    let mut elements = Vec::new();
+    let texts = excalidraw::add_elements(&mut elements, &specs).unwrap();
+
+    assert_eq!(elements.len(), 5, "2 shapes + 1 arrow + 2 bound labels");
+    assert_eq!(texts.len(), 2);
+    let arrow = elements.iter().find(|e| e["type"] == "arrow").unwrap();
+    assert_eq!(arrow["startBinding"]["elementId"], "a");
+    assert_eq!(arrow["endBinding"]["elementId"], "b");
+    // Arrow runs from a's right edge to b's left edge (plus the binding gap).
+    assert_eq!(arrow["x"], 108.0);
+    assert_eq!(arrow["points"][1][0], 184.0);
+    let a = &elements[0];
+    let bound: Vec<&str> = a["boundElements"].as_array().unwrap().iter().map(|b| b["type"].as_str().unwrap()).collect();
+    assert_eq!(bound, vec!["text", "arrow"]);
+
+    let summary = excalidraw::summarize(&excalidraw::new_scene(elements.clone()));
+    assert_eq!(summary.len(), 3, "bound labels fold into their containers");
+    assert_eq!(summary[0]["label"], "Start");
+
+    let dup: Vec<excalidraw::ElementSpec> = serde_json::from_value(serde_json::json!([{ "id": "a", "type": "text", "x": 0, "y": 0, "text": "x" }])).unwrap();
+    assert!(excalidraw::add_elements(&mut elements, &dup).is_err());
+}
+
+#[test]
+fn test_vault_excalidraw_create_read_add() {
+    let vault = obsidian_mcp::vault::Vault::new(test_config());
+    let name = "_test-drawing.excalidraw.md";
+    remove_fixture(name);
+
+    let specs: Vec<excalidraw::ElementSpec> = serde_json::from_value(serde_json::json!([
+        { "id": "box1", "type": "rectangle", "x": 0, "y": 0, "text": "Hello" },
+    ])).unwrap();
+    let (path, _) = vault.create_drawing("_test-drawing", &specs).unwrap();
+    assert_eq!(path, name);
+
+    let more: Vec<excalidraw::ElementSpec> = serde_json::from_value(serde_json::json!([
+        { "id": "box2", "type": "diamond", "x": 300, "y": 0, "text": "World" },
+        { "type": "arrow", "from": "box1", "to": "box2" },
+    ])).unwrap();
+    vault.add_drawing_elements("_test-drawing", &more).unwrap();
+
+    let d = vault.read_drawing(name).unwrap();
+    let texts: Vec<&str> = d.text_elements.iter().map(|(_, t)| t.as_str()).collect();
+    assert_eq!(texts, vec!["Hello", "World"]);
+    let summary = excalidraw::summarize(&d.scene);
+    assert_eq!(summary.len(), 3);
+    assert!(summary.iter().any(|e| e["from"] == "box1" && e["to"] == "box2"));
+
+    let content = std::fs::read_to_string(test_vault_path().join(name)).unwrap();
+    assert!(content.starts_with("---\n\nexcalidraw-plugin: parsed\n"));
+    assert!(content.contains("## Text Elements\nHello ^"));
+    assert!(content.contains("%%\n## Drawing\n```json\n"));
+    remove_fixture(name);
+}
+
+#[test]
+fn test_vault_excalidraw_reads_compressed_drawing() {
+    let vault = obsidian_mcp::vault::Vault::new(test_config());
+    let name = "_test-compressed.excalidraw.md";
+    let scene = serde_json::json!({
+        "type": "excalidraw", "version": 2,
+        "elements": [{ "id": "t1", "type": "text", "x": 1, "y": 2, "width": 10, "height": 5, "text": "Hi ✓" }],
+        "files": {},
+    });
+    let compressed = lz_str::compress_to_base64(scene.to_string().as_str());
+    // The plugin wraps compressed data across lines; decompression must ignore that.
+    let wrapped: Vec<String> = compressed.as_bytes().chunks(64).map(|c| String::from_utf8(c.to_vec()).unwrap()).collect();
+    write_fixture(name, &format!(
+        "---\nexcalidraw-plugin: parsed\n---\n# Excalidraw Data\n\n## Text Elements\nHi ✓ ^t1\n\n## Embedded Files\nabc123: [[photo.png]]\n\n%%\n## Drawing\n```compressed-json\n{}\n```\n%%",
+        wrapped.join("\n\n"),
+    ));
+
+    let d = vault.read_drawing(name).unwrap();
+    assert!(d.compressed);
+    assert_eq!(d.text_elements, vec![("t1".to_string(), "Hi ✓".to_string())]);
+    assert_eq!(d.embedded_files, vec![("abc123".to_string(), "[[photo.png]]".to_string())]);
+    assert_eq!(d.scene["elements"][0]["text"], "Hi ✓");
+    remove_fixture(name);
+}
+
+#[test]
+fn test_canvas_apply_edits() {
+    let mut doc = canvas::empty_canvas();
+    let nodes: Vec<canvas::NodeSpec> = serde_json::from_value(serde_json::json!([
+        { "id": "n1", "type": "text", "text": "Idea", "x": 0, "y": 0, "style_attributes": { "shape": "pill" } },
+        { "id": "n2", "type": "file", "file": "note1.md" },
+    ])).unwrap();
+    let edges: Vec<canvas::EdgeSpec> = serde_json::from_value(serde_json::json!([
+        { "id": "e1", "from_node": "n1", "to_node": "n2", "to_side": "top", "style_attributes": { "path": "dotted" } },
+    ])).unwrap();
+    let s = canvas::apply_edits(&mut doc, &nodes, &edges, &[]).unwrap();
+    assert_eq!(s.created, vec!["n1", "n2", "e1"]);
+    assert_eq!(doc["nodes"][0]["styleAttributes"]["shape"], "pill");
+    assert_eq!(doc["nodes"][1]["y"], 140, "auto-placed below existing content");
+    assert_eq!(doc["edges"][0]["styleAttributes"]["path"], "dotted");
+
+    // Update merges fields; null removes a style attribute.
+    let update: Vec<canvas::NodeSpec> = serde_json::from_value(serde_json::json!([
+        { "id": "n1", "color": "4", "style_attributes": { "shape": null, "border": "dashed" } },
+    ])).unwrap();
+    let s = canvas::apply_edits(&mut doc, &update, &[], &[]).unwrap();
+    assert_eq!(s.updated, vec!["n1"]);
+    assert_eq!(doc["nodes"][0]["text"], "Idea");
+    assert_eq!(doc["nodes"][0]["styleAttributes"], serde_json::json!({ "border": "dashed" }));
+
+    // Removing a node removes its edges.
+    let s = canvas::apply_edits(&mut doc, &[], &[], &["n2".to_string()]).unwrap();
+    assert_eq!(s.removed, vec!["n2", "e1"]);
+    assert_eq!(doc["edges"].as_array().unwrap().len(), 0);
+
+    let bad_edge: Vec<canvas::EdgeSpec> = serde_json::from_value(serde_json::json!([{ "from_node": "n1", "to_node": "ghost" }])).unwrap();
+    assert!(canvas::apply_edits(&mut doc, &[], &bad_edge, &[]).is_err());
+    let bad_color: Vec<canvas::NodeSpec> = serde_json::from_value(serde_json::json!([{ "id": "n1", "color": "9" }])).unwrap();
+    assert!(canvas::apply_edits(&mut doc, &bad_color, &[], &[]).is_err());
+    let missing_text: Vec<canvas::NodeSpec> = serde_json::from_value(serde_json::json!([{ "type": "text" }])).unwrap();
+    assert!(canvas::apply_edits(&mut doc, &missing_text, &[], &[]).is_err());
+}
+
+#[test]
+fn test_vault_canvas_create_edit_read() {
+    let vault = obsidian_mcp::vault::Vault::new(test_config());
+    let name = "_test-board.canvas";
+    remove_fixture(name);
+
+    let nodes: Vec<canvas::NodeSpec> = serde_json::from_value(serde_json::json!([{ "id": "a", "type": "text", "text": "A" }])).unwrap();
+    let (path, _) = vault.create_canvas("_test-board", &nodes, &[]).unwrap();
+    assert_eq!(path, name);
+
+    let more: Vec<canvas::NodeSpec> = serde_json::from_value(serde_json::json!([{ "id": "b", "type": "link", "url": "https://obsidian.md" }])).unwrap();
+    let edges: Vec<canvas::EdgeSpec> = serde_json::from_value(serde_json::json!([{ "from_node": "a", "to_node": "b" }])).unwrap();
+    vault.edit_canvas(name, &more, &edges, &[]).unwrap();
+
+    let (_, doc) = vault.read_canvas("_test-board").unwrap();
+    assert_eq!(doc["nodes"].as_array().unwrap().len(), 2);
+    assert_eq!(doc["edges"][0]["toNode"], "b");
+    let raw = std::fs::read_to_string(test_vault_path().join(name)).unwrap();
+    assert!(raw.starts_with("{\n\t\"nodes\""), "tab-indented like Obsidian writes it");
+    assert!(vault.list_vault(None, None).unwrap().iter().any(|e| e == name));
+    assert!(vault.create_canvas("../escape", &[], &[]).is_err());
+
+    remove_fixture(name);
+}

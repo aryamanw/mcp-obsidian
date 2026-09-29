@@ -108,3 +108,23 @@ fn yaml_scalar_to_string(yaml: &Yaml) -> Option<String> {
         _ => None,
     }
 }
+
+/// Splits `content` into its raw frontmatter block (opening `---` through
+/// the closing `---` line, inclusive) and the rest, without re-serializing
+/// anything. Plugin-managed files (Kanban boards, Excalidraw drawings) are
+/// rewritten through this so their frontmatter survives byte-for-byte —
+/// `serialize_frontmatter` only round-trips flat string/list values.
+pub fn split_raw(content: &str) -> (&str, &str) {
+    if let Some(after_open) = content.strip_prefix("---") {
+        if after_open.starts_with('\n') || after_open.starts_with("\r\n") {
+            let mut offset = 3;
+            for line in after_open.split_inclusive('\n') {
+                offset += line.len();
+                if line.trim_end() == "---" {
+                    return content.split_at(offset);
+                }
+            }
+        }
+    }
+    ("", content)
+}

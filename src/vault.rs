@@ -5,6 +5,9 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
+mod plugins;
+pub use plugins::{CardUpdate, NewLane};
+
 #[derive(Debug, Clone)]
 pub struct NoteInfo {
     pub path: String,
@@ -85,7 +88,7 @@ impl Vault {
 
             if entry.file_type().is_dir() {
                 entries.push(format!("{}/", rel));
-            } else if entry.path().extension().is_some_and(|ext| ext == "md") {
+            } else if entry.path().extension().is_some_and(|ext| ext == "md" || ext == "canvas" || ext == "excalidraw") {
                 entries.push(rel.to_string());
             }
         }

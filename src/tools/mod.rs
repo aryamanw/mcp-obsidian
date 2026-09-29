@@ -4,3 +4,8 @@ pub mod write;
 pub mod links;
 pub mod templates;
 pub mod graph;
+pub mod excalidraw;
+pub mod tables;
+pub mod kanban;
+pub mod diagrams;
+pub mod canvas;
