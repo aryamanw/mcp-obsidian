@@ -1,4 +1,4 @@
-use obsidian_mcp::parse::frontmatter::FrontmatterValue;
+use obsidian_mcp::parse::frontmatter::{Frontmatter, FrontmatterValue};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -85,7 +85,7 @@ fn test_tag_extraction() {
 
 #[test]
 fn test_tag_extraction_from_frontmatter() {
-    let mut fm = HashMap::new();
+    let mut fm = Frontmatter::new();
     fm.insert("tags".to_string(), FrontmatterValue::String("alpha, beta".to_string()));
     let tags = obsidian_mcp::parse::tags::extract_tags_from_frontmatter(&fm);
     assert!(tags.contains("alpha"));
@@ -96,7 +96,7 @@ fn test_tag_extraction_from_frontmatter() {
 fn test_tag_extraction_from_frontmatter_list() {
     // A real YAML sequence (`tags: [alpha, beta]`) must yield one tag per
     // element, without comma-splitting each element as the scalar form does.
-    let mut fm = HashMap::new();
+    let mut fm = Frontmatter::new();
     fm.insert("tags".to_string(), FrontmatterValue::List(vec!["alpha".to_string(), "beta".to_string()]));
     let tags = obsidian_mcp::parse::tags::extract_tags_from_frontmatter(&fm);
     assert!(tags.contains("alpha"));
@@ -162,7 +162,7 @@ fn test_vault_create_and_read() {
     // Ensure clean state
     let _ = std::fs::remove_file(test_vault_path().join("_test-created.md"));
 
-    let mut fm = HashMap::new();
+    let mut fm = Frontmatter::new();
     fm.insert("status".to_string(), FrontmatterValue::String("new".to_string()));
 
     let note = vault.create_note("_test-created.md", "Created by test", Some(&fm)).unwrap();
@@ -187,7 +187,7 @@ fn test_vault_create_note_writes_array_frontmatter_as_yaml_sequence() {
     let vault = obsidian_mcp::vault::Vault::new(test_config());
     let _ = std::fs::remove_file(test_vault_path().join("_test-array-fm.md"));
 
-    let mut fm = HashMap::new();
+    let mut fm = Frontmatter::new();
     fm.insert("tags".to_string(), FrontmatterValue::List(vec![
         "mba".to_string(), "index".to_string(), "home".to_string(),
     ]));
@@ -292,7 +292,7 @@ fn test_vault_set_frontmatter() {
 
     let _ = vault.create_note("_test-fm.md", "Test content", None);
 
-    let mut fm = HashMap::new();
+    let mut fm = Frontmatter::new();
     fm.insert("priority".to_string(), FrontmatterValue::String("high".to_string()));
     let updated = vault.set_frontmatter("_test-fm.md", &fm).unwrap();
     assert_eq!(updated.frontmatter.get("priority").unwrap(), "high");
@@ -415,7 +415,7 @@ fn test_vault_bulk_tag() {
 
     vault.create_note("_test-bt-note.md", "bulk-taggable content", None).unwrap();
 
-    let count = vault.bulk_tag("bulk-taggable", &["new-tag".to_string()], &[]).unwrap();
+    let (count, _) = vault.bulk_tag("bulk-taggable", &["new-tag".to_string()], &[]).unwrap();
     assert_eq!(count, 1);
 
     let note = vault.read_note("_test-bt-note.md").unwrap();
@@ -1240,4 +1240,173 @@ fn test_vault_canvas_create_edit_read() {
     assert!(vault.create_canvas("../escape", &[], &[]).is_err());
 
     remove_fixture(name);
+}
+
+// ===== Frontmatter quoting / fail-closed writes =====
+
+#[test]
+fn test_yaml_scalar_quotes_only_what_yaml_would_misread() {
+    use obsidian_mcp::parse::frontmatter::yaml_scalar;
+    for plain in ["active", "2024-01-01", "42", "1.5", "true", "", "Some Title", "a-b_c"] {
+        assert_eq!(yaml_scalar(plain), plain, "{:?} should stay plain", plain);
+    }
+    assert_eq!(yaml_scalar("[[X]]"), "\"[[X]]\"");
+    assert_eq!(yaml_scalar("[[Y|alias]], extra"), "\"[[Y|alias]], extra\"");
+    assert_eq!(yaml_scalar("a: b"), "\"a: b\"");
+    assert_eq!(yaml_scalar("#tag"), "\"#tag\"");
+    assert_eq!(yaml_scalar("null"), "\"null\"");
+    assert_eq!(yaml_scalar("007"), "\"007\"");
+    assert_eq!(yaml_scalar(" padded "), "\" padded \"");
+    assert_eq!(yaml_scalar("say \"hi\"\nnext\\"), "\"say \\\"hi\\\"\\nnext\\\\\"");
+}
+
+#[test]
+fn test_vault_set_frontmatter_round_trips_wikilinks() {
+    let vault = obsidian_mcp::vault::Vault::new(test_config());
+    let name = "_test-fm-wikilinks.md";
+    write_fixture(name, "---\nstatus: active\ntags:\n  - project\n---\nBody\n");
+
+    let tricky = [
+        "[[X]]", "[[Y|alias]], extra", "a: b", "#notatag", "null", "say \"hi\"\nline two",
+    ];
+    let mut fields = Frontmatter::new();
+    for (i, v) in tricky.iter().enumerate() {
+        fields.insert(format!("f{}", i), FrontmatterValue::String(v.to_string()));
+    }
+    fields.insert("related".to_string(), FrontmatterValue::List(vec!["[[A]]".into(), "[[B|b]]".into()]));
+    fields.insert("odd: key".to_string(), FrontmatterValue::String("v".into()));
+    vault.set_frontmatter(name, &fields).unwrap();
+
+    // A second, unrelated write must not lose anything written above.
+    let mut more = Frontmatter::new();
+    more.insert("owner".to_string(), FrontmatterValue::String("Alice".into()));
+    let note = vault.set_frontmatter(name, &more).unwrap();
+
+    assert_eq!(note.frontmatter.get("status").unwrap(), "active");
+    assert_eq!(note.frontmatter.get("tags"), Some(&FrontmatterValue::List(vec!["project".into()])));
+    assert_eq!(note.frontmatter.get("owner").unwrap(), "Alice");
+    for (i, v) in tricky.iter().enumerate() {
+        assert_eq!(note.frontmatter.get(&format!("f{}", i)).unwrap(), *v);
+    }
+    assert_eq!(note.frontmatter.get("related"), Some(&FrontmatterValue::List(vec!["[[A]]".into(), "[[B|b]]".into()])));
+    assert_eq!(note.frontmatter.get("odd: key").unwrap(), "v");
+
+    let raw = std::fs::read_to_string(test_vault_path().join(name)).unwrap();
+    assert!(raw.contains("f0: \"[[X]]\"\n"), "links are written quoted, like Obsidian does: {}", raw);
+    assert!(raw.contains("status: active\n"), "plain values stay unquoted");
+    remove_fixture(name);
+}
+
+#[test]
+fn test_frontmatter_parse_reports_problems() {
+    use obsidian_mcp::parse::frontmatter::parse;
+    assert!(parse("---\nstatus: active\n---\nBody").problem.is_none());
+    assert!(parse("No frontmatter").problem.is_none());
+    assert!(parse("---\n---\nEmpty block").problem.is_none());
+
+    let invalid = parse("---\nstatus: active\nup: [[Y|alias]], extra\n---\nBody");
+    assert!(invalid.problem.as_deref().unwrap().contains("invalid YAML"));
+
+    // Already-damaged notes: an unquoted [[X]] reads as a nested list.
+    let nested = parse("---\nstatus: active\nrelated: [[X]]\n---\nBody");
+    assert!(nested.problem.as_deref().unwrap().contains("related"));
+    let nested_map = parse("---\nloc:\n  lat: 1\n---\nBody");
+    assert!(nested_map.problem.as_deref().unwrap().contains("loc"));
+}
+
+#[test]
+fn test_vault_writes_refuse_to_clobber_unparseable_frontmatter() {
+    let vault = obsidian_mcp::vault::Vault::new(test_config());
+    let original = "---\nstatus: active\nup: [[Y|alias]], extra\n---\n# Doc\n\n## Tasks\n\n- a\n\nbt-invalid-fm-marker\n";
+
+    for (name, attempt) in [
+        ("_test-bad-fm-1.md", 0),
+        ("_test-bad-fm-2.md", 1),
+        ("_test-bad-fm-3.md", 2),
+        ("_test-bad-fm-4.md", 3),
+    ] {
+        write_fixture(name, original);
+        let mut fields = Frontmatter::new();
+        fields.insert("owner".to_string(), FrontmatterValue::String("Alice".into()));
+        let err = match attempt {
+            0 => vault.set_frontmatter(name, &fields).unwrap_err(),
+            1 => vault.update_note(name, "new body", "replace").unwrap_err(),
+            2 => vault.update_section(name, "## Tasks", "- b", "append").unwrap_err(),
+            _ => vault.link_related_notes(name).unwrap_err(),
+        };
+        assert!(err.to_string().contains("Refusing to rewrite"), "{}", err);
+        assert_eq!(std::fs::read_to_string(test_vault_path().join(name)).unwrap(), original, "file untouched");
+    }
+
+    let (count, skipped) = vault.bulk_tag("bt-invalid-fm-marker", &["x".to_string()], &[]).unwrap();
+    assert_eq!(count, 0);
+    assert_eq!(skipped.len(), 4);
+    for name in ["_test-bad-fm-1.md", "_test-bad-fm-2.md", "_test-bad-fm-3.md", "_test-bad-fm-4.md"] {
+        assert_eq!(std::fs::read_to_string(test_vault_path().join(name)).unwrap(), original);
+        remove_fixture(name);
+    }
+}
+
+// ===== Property order =====
+
+fn property_keys(raw: &str) -> Vec<String> {
+    let block = raw.split("---").nth(1).unwrap();
+    block.lines()
+        .filter(|l| !l.starts_with(' ') && l.contains(':'))
+        .map(|l| l.split(':').next().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn test_frontmatter_parse_preserves_order() {
+    let parsed = obsidian_mcp::parse::frontmatter::parse("---\nzeta: 1\nalpha: 2\nmid: 3\n---\n");
+    let keys: Vec<&str> = parsed.frontmatter.keys().map(String::as_str).collect();
+    assert_eq!(keys, vec!["zeta", "alpha", "mid"]);
+}
+
+#[test]
+fn test_vault_writes_preserve_property_order() {
+    let vault = obsidian_mcp::vault::Vault::new(test_config());
+    let name = "_test-fm-order.md";
+    let keys: Vec<String> = ["title", "status", "zeta", "created", "alpha", "tags", "priority", "area"]
+        .iter().map(|s| s.to_string()).collect();
+    let mut fm = String::from("---\n");
+    for k in &keys {
+        fm.push_str(&format!("{}: {}\n", k, if k == "tags" { "[order-test]" } else { "x" }));
+    }
+    write_fixture(name, &format!("{}---\n# Doc\n\n## Tasks\n\nbt-order-marker\n", fm));
+
+    // Updating an existing key keeps its position; new keys are appended.
+    let mut fields = Frontmatter::new();
+    fields.insert("zeta".into(), FrontmatterValue::String("changed".into()));
+    fields.insert("new_b".into(), FrontmatterValue::String("1".into()));
+    fields.insert("new_a".into(), FrontmatterValue::String("2".into()));
+    vault.set_frontmatter(name, &fields).unwrap();
+    vault.update_section(name, "## Tasks", "- more", "append").unwrap();
+    vault.update_note(name, "# Doc\n\n## Tasks\n\nbt-order-marker\n", "replace").unwrap();
+    vault.bulk_tag("bt-order-marker", &["extra".to_string()], &[]).unwrap();
+
+    let raw = std::fs::read_to_string(test_vault_path().join(name)).unwrap();
+    let mut expected = keys.clone();
+    expected.extend(["new_b".to_string(), "new_a".to_string()]);
+    assert_eq!(property_keys(&raw), expected, "{}", raw);
+    assert!(raw.contains("zeta: changed\n"));
+    remove_fixture(name);
+}
+
+#[test]
+fn test_vault_apply_template_keeps_note_order_and_appends_template_keys() {
+    let vault = obsidian_mcp::vault::Vault::new(test_config());
+    let template_dir = test_vault_path().join("templates");
+    std::fs::write(template_dir.join("_test-order-tpl.md"), "---\ntype: meeting\nstatus: todo\nattendees: []\n---\nTemplate body\n").unwrap();
+    let name = "_test-order-apply.md";
+    write_fixture(name, "---\nzeta: 1\nstatus: done\nalpha: 2\n---\nExisting body\n");
+
+    vault.apply_template("_test-order-tpl", name).unwrap();
+    let raw = std::fs::read_to_string(test_vault_path().join(name)).unwrap();
+    assert_eq!(property_keys(&raw), vec!["zeta", "status", "alpha", "type", "attendees"]);
+    assert!(raw.contains("status: done\n"), "note's own value wins");
+
+    remove_fixture(name);
+    let _ = std::fs::remove_file(template_dir.join("_test-order-tpl.md"));
 }

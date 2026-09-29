@@ -133,7 +133,7 @@ pub fn remove_inline_tags(body: &str, remove_tags: &[String]) -> (String, bool) 
     (result, true)
 }
 
-pub fn extract_tags_from_frontmatter(frontmatter: &std::collections::HashMap<String, super::frontmatter::FrontmatterValue>) -> HashSet<String> {
+pub fn extract_tags_from_frontmatter(frontmatter: &super::frontmatter::Frontmatter) -> HashSet<String> {
     use super::frontmatter::FrontmatterValue;
 
     let mut tags = HashSet::new();
@@ -157,7 +157,7 @@ pub fn extract_tags_from_frontmatter(frontmatter: &std::collections::HashMap<Str
     tags
 }
 
-pub fn all_tags(content: &str, frontmatter: &std::collections::HashMap<String, super::frontmatter::FrontmatterValue>) -> HashSet<String> {
+pub fn all_tags(content: &str, frontmatter: &super::frontmatter::Frontmatter) -> HashSet<String> {
     let mut tags = extract_tags(content);
     tags.extend(extract_tags_from_frontmatter(frontmatter));
     tags

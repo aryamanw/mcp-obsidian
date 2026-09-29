@@ -260,9 +260,10 @@ impl ObsidianMcp {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let add = req.add_tags.unwrap_or_default();
         let remove = req.remove_tags.unwrap_or_default();
-        respond(self.vault.bulk_tag(&req.query, &add, &remove), |count| {
+        respond(self.vault.bulk_tag(&req.query, &add, &remove), |(count, skipped)| {
             serde_json::json!({
                 "notes_updated": count,
+                "skipped_invalid_frontmatter": skipped,
                 "message": format!("Updated tags on {} note(s)", count),
             })
         })

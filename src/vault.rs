@@ -1,6 +1,6 @@
 use crate::config::Config;
 use crate::parse::{frontmatter, wikilink, tags, sections};
-use crate::parse::frontmatter::FrontmatterValue;
+use crate::parse::frontmatter::{Frontmatter, FrontmatterValue};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
@@ -11,7 +11,7 @@ pub use plugins::{CardUpdate, NewLane};
 #[derive(Debug, Clone)]
 pub struct NoteInfo {
     pub path: String,
-    pub frontmatter: HashMap<String, FrontmatterValue>,
+    pub frontmatter: Frontmatter,
     pub body: String,
     pub tags: Vec<String>,
     pub links: Vec<String>,
@@ -162,7 +162,7 @@ impl Vault {
         Ok(joined)
     }
 
-    pub fn create_note(&self, note_path: &str, content: &str, frontmatter_fields: Option<&HashMap<String, FrontmatterValue>>) -> anyhow::Result<NoteInfo> {
+    pub fn create_note(&self, note_path: &str, content: &str, frontmatter_fields: Option<&Frontmatter>) -> anyhow::Result<NoteInfo> {
         let full_path = self.validate_parent(note_path)?;
 
         if full_path.exists() {
@@ -192,6 +192,7 @@ impl Vault {
             "replace" => {
                 let existing = std::fs::read_to_string(&full_path)?;
                 let parsed = frontmatter::parse(&existing);
+                ensure_rewritable(&parsed)?;
                 if !parsed.frontmatter.is_empty() {
                     let fm_str = serialize_frontmatter(&parsed.frontmatter);
                     std::fs::write(&full_path, format!("---\n{}---\n{}", fm_str, content))?;
@@ -205,10 +206,11 @@ impl Vault {
         self.read_note(note_path)
     }
 
-    pub fn set_frontmatter(&self, note_path: &str, fields: &HashMap<String, FrontmatterValue>) -> anyhow::Result<NoteInfo> {
+    pub fn set_frontmatter(&self, note_path: &str, fields: &Frontmatter) -> anyhow::Result<NoteInfo> {
         let full_path = self.resolve_note_path(note_path)?;
         let content = std::fs::read_to_string(&full_path)?;
         let mut parsed = frontmatter::parse(&content);
+        ensure_rewritable(&parsed)?;
 
         for (k, v) in fields {
             parsed.frontmatter.insert(k.clone(), v.clone());
@@ -237,6 +239,7 @@ impl Vault {
         let full_path = self.resolve_note_path(note_path)?;
         let existing = std::fs::read_to_string(&full_path)?;
         let parsed = frontmatter::parse(&existing);
+        ensure_rewritable(&parsed)?;
 
         let new_body = match sections::find_section(&parsed.body, heading) {
             Ok(section) => {
@@ -614,14 +617,21 @@ impl Vault {
         Ok(())
     }
 
-    pub fn bulk_tag(&self, query: &str, add_tags: &[String], remove_tags: &[String]) -> anyhow::Result<usize> {
+    /// Returns the number of notes updated and the paths of matching notes
+    /// skipped because their frontmatter can't be safely rewritten.
+    pub fn bulk_tag(&self, query: &str, add_tags: &[String], remove_tags: &[String]) -> anyhow::Result<(usize, Vec<String>)> {
         let notes = self.search_notes(query, 1000)?;
         let mut count = 0;
+        let mut skipped = Vec::new();
 
         for note in &notes {
             if let Ok(full_path) = self.resolve_note_path(&note.path) {
                 if let Ok(content) = std::fs::read_to_string(&full_path) {
                     let mut parsed = frontmatter::parse(&content);
+                    if parsed.problem.is_some() {
+                        skipped.push(note.path.clone());
+                        continue;
+                    }
                     let fm_changed = update_frontmatter_tags(&mut parsed.frontmatter, add_tags, remove_tags);
                     let (new_body, body_changed) = tags::remove_inline_tags(&parsed.body, remove_tags);
                     if fm_changed || body_changed {
@@ -638,12 +648,13 @@ impl Vault {
             }
         }
 
-        Ok(count)
+        Ok((count, skipped))
     }
 
     pub fn link_related_notes(&self, note_path: &str) -> anyhow::Result<NoteInfo> {
         let note = self.read_note(note_path)?;
         let full_path = self.resolve_note_path(note_path)?;
+        ensure_rewritable(&frontmatter::parse(&std::fs::read_to_string(&full_path)?))?;
 
         let significant = extract_significant_words(&note.body, 10);
         if significant.is_empty() {
@@ -782,10 +793,16 @@ impl Vault {
 
         let parsed_existing = frontmatter::parse(&existing);
         let parsed_template = frontmatter::parse(&template_content);
+        ensure_rewritable(&parsed_existing)?;
+        if let Some(problem) = &parsed_template.problem {
+            return Err(anyhow::anyhow!("Template '{}' has frontmatter that can't be applied safely: {}", template_name, problem));
+        }
 
-        let mut merged_fm = parsed_template.frontmatter;
-        for (k, v) in &parsed_existing.frontmatter {
-            merged_fm.insert(k.clone(), v.clone());
+        // The note's own values win and keep their order; properties only
+        // the template has are appended after them.
+        let mut merged_fm = parsed_existing.frontmatter.clone();
+        for (k, v) in parsed_template.frontmatter {
+            merged_fm.entry(k).or_insert(v);
         }
 
         let body = if parsed_existing.body.trim().is_empty() {
@@ -951,7 +968,20 @@ fn reject_dotfile_component(user_path: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn update_frontmatter_tags(fm: &mut HashMap<String, FrontmatterValue>, add_tags: &[String], remove_tags: &[String]) -> bool {
+/// Refuses to rewrite a note whose frontmatter didn't parse completely: the
+/// parsed map would be missing some (or all) of its real properties, and
+/// writing it back would silently delete them.
+fn ensure_rewritable(parsed: &frontmatter::NoteContent) -> anyhow::Result<()> {
+    match &parsed.problem {
+        Some(problem) => Err(anyhow::anyhow!(
+            "Refusing to rewrite this note's properties: {}. Fix its frontmatter block by hand first so no properties are lost.",
+            problem
+        )),
+        None => Ok(()),
+    }
+}
+
+fn update_frontmatter_tags(fm: &mut Frontmatter, add_tags: &[String], remove_tags: &[String]) -> bool {
     if add_tags.is_empty() && remove_tags.is_empty() {
         return false;
     }
@@ -1022,7 +1052,7 @@ fn extract_significant_words(text: &str, max_words: usize) -> Vec<String> {
     words.into_iter().map(|(w, _)| w).collect()
 }
 
-fn build_note_content(body: &str, frontmatter_fields: Option<&HashMap<String, FrontmatterValue>>) -> String {
+fn build_note_content(body: &str, frontmatter_fields: Option<&Frontmatter>) -> String {
     match frontmatter_fields {
         Some(fields) if !fields.is_empty() => {
             let fm_str = serialize_frontmatter(fields);
@@ -1032,18 +1062,21 @@ fn build_note_content(body: &str, frontmatter_fields: Option<&HashMap<String, Fr
     }
 }
 
-fn serialize_frontmatter(fields: &HashMap<String, FrontmatterValue>) -> String {
+/// Writes properties as YAML, quoting any key or value YAML would otherwise
+/// misread (see `frontmatter::yaml_scalar`) — e.g. a `[[wikilink]]` value.
+fn serialize_frontmatter(fields: &Frontmatter) -> String {
     let mut out = String::new();
     for (k, v) in fields {
+        let k = frontmatter::yaml_scalar(k);
         match v {
-            FrontmatterValue::String(s) => out.push_str(&format!("{}: {}\n", k, s)),
+            FrontmatterValue::String(s) => out.push_str(&format!("{}: {}\n", k, frontmatter::yaml_scalar(s))),
             FrontmatterValue::List(items) if items.is_empty() => {
                 out.push_str(&format!("{}: []\n", k));
             }
             FrontmatterValue::List(items) => {
                 out.push_str(&format!("{}:\n", k));
                 for item in items {
-                    out.push_str(&format!("  - {}\n", item));
+                    out.push_str(&format!("  - {}\n", frontmatter::yaml_scalar(item)));
                 }
             }
         }

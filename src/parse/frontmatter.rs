@@ -1,6 +1,5 @@
 use regex::Regex;
 use rmcp::schemars;
-use std::collections::HashMap;
 use std::sync::OnceLock;
 use yaml_rust2::{YamlLoader, Yaml};
 
@@ -40,10 +39,22 @@ impl PartialEq<str> for FrontmatterValue {
     }
 }
 
+/// A note's properties, in the order they appear in the file. Order
+/// matters: Obsidian shows properties in file order, and rewriting a note
+/// shouldn't shuffle them. New keys are appended; updated keys keep their
+/// position.
+pub type Frontmatter = indexmap::IndexMap<String, FrontmatterValue>;
+
 #[derive(Debug, Clone)]
 pub struct NoteContent {
-    pub frontmatter: HashMap<String, FrontmatterValue>,
+    pub frontmatter: Frontmatter,
     pub body: String,
+    /// Why the note's frontmatter block couldn't be fully parsed, if it
+    /// couldn't: invalid YAML, over the size cap, anchors/aliases, or values
+    /// (nested maps/lists) that `FrontmatterValue` can't represent. When set,
+    /// `frontmatter` is missing some or all of the note's real properties,
+    /// so writing it back would destroy them — write paths must refuse.
+    pub problem: Option<String>,
 }
 
 pub fn parse(content: &str) -> NoteContent {
@@ -51,49 +62,70 @@ pub fn parse(content: &str) -> NoteContent {
         let without_opening = &content[3..];
         if let Some(end_idx) = without_opening.find("---") {
             let yaml_str = &without_opening[..end_idx];
-            if yaml_str.len() > MAX_FRONTMATTER_BYTES
-                || yaml_anchor_or_alias_regex().is_match(yaml_str)
-            {
+            let rejected = if yaml_str.len() > MAX_FRONTMATTER_BYTES {
+                Some(format!("frontmatter exceeds {} bytes", MAX_FRONTMATTER_BYTES))
+            } else if yaml_anchor_or_alias_regex().is_match(yaml_str) {
+                Some("frontmatter uses YAML anchors/aliases".to_string())
+            } else {
+                None
+            };
+            if rejected.is_some() {
                 return NoteContent {
-                    frontmatter: HashMap::new(),
+                    frontmatter: Frontmatter::new(),
                     body: content.to_string(),
+                    problem: rejected,
                 };
             }
             let body = without_opening[end_idx + 3..].trim_start_matches('\n').to_string();
 
-            let frontmatter = parse_yaml(yaml_str);
-            return NoteContent { frontmatter, body };
+            let (frontmatter, problem) = parse_yaml(yaml_str);
+            return NoteContent { frontmatter, body, problem };
         }
     }
 
     NoteContent {
-        frontmatter: HashMap::new(),
+        frontmatter: Frontmatter::new(),
         body: content.to_string(),
+        problem: None,
     }
 }
 
-fn parse_yaml(yaml_str: &str) -> HashMap<String, FrontmatterValue> {
-    let mut map = HashMap::new();
-    if let Ok(docs) = YamlLoader::load_from_str(yaml_str) {
-        if let Some(doc) = docs.first() {
-            if let Some(hash) = doc.as_hash() {
-                for (key, value) in hash {
-                    if let (Some(k), Some(v)) = (key.as_str(), yaml_to_frontmatter_value(value)) {
-                        map.insert(k.to_string(), v);
-                    }
-                }
+fn parse_yaml(yaml_str: &str) -> (Frontmatter, Option<String>) {
+    let mut map = Frontmatter::new();
+    let docs = match YamlLoader::load_from_str(yaml_str) {
+        Ok(docs) => docs,
+        Err(e) => return (map, Some(format!("invalid YAML: {}", e))),
+    };
+    let hash = match docs.first() {
+        None | Some(Yaml::Null) => return (map, None),
+        Some(Yaml::Hash(hash)) => hash,
+        Some(_) => return (map, Some("frontmatter is not a key-value mapping".to_string())),
+    };
+
+    let mut problem = None;
+    for (key, value) in hash {
+        match (yaml_scalar_to_string(key), yaml_to_frontmatter_value(value)) {
+            (Some(k), Some(v)) => {
+                map.insert(k, v);
+            }
+            (k, _) => {
+                problem.get_or_insert_with(|| format!(
+                    "property '{}' has a nested value that can't be preserved",
+                    k.unwrap_or_else(|| format!("{:?}", key)),
+                ));
             }
         }
     }
-    map
+    (map, problem)
 }
 
 fn yaml_to_frontmatter_value(yaml: &Yaml) -> Option<FrontmatterValue> {
     match yaml {
-        Yaml::Array(arr) => {
-            let items: Vec<String> = arr.iter().filter_map(yaml_scalar_to_string).collect();
-            Some(FrontmatterValue::List(items))
-        }
+        // A list with any non-scalar item (e.g. `[[X]]`, which YAML reads as
+        // a list containing a list) can't be represented; dropping those
+        // items would silently lose data on the next write.
+        Yaml::Array(arr) => arr.iter().map(yaml_scalar_to_string).collect::<Option<Vec<_>>>()
+            .map(FrontmatterValue::List),
         other => yaml_scalar_to_string(other).map(FrontmatterValue::String),
     }
 }
@@ -107,6 +139,47 @@ fn yaml_scalar_to_string(yaml: &Yaml) -> Option<String> {
         Yaml::Null => Some("".to_string()),
         _ => None,
     }
+}
+
+fn reads_back_plain(s: &str) -> bool {
+    if s.contains(['\n', '\r', '\t']) {
+        return false;
+    }
+    let Ok(docs) = YamlLoader::load_from_str(&format!("v: {}", s)) else { return false };
+    match docs.first().map(|doc| &doc["v"]) {
+        // `key:` with nothing after it is how an empty property is written.
+        Some(Yaml::Null) => s.is_empty(),
+        Some(value) => yaml_scalar_to_string(value).as_deref() == Some(s),
+        None => false,
+    }
+}
+
+/// Renders `s` as a YAML scalar that reads back as exactly `s`. It's written
+/// plain when YAML already parses it that way (so `status: active`, `year:
+/// 2024`, and `done: true` stay unquoted and keep their types in Obsidian);
+/// anything YAML would misread — `[[wikilinks]]` (a nested list), `a: b`,
+/// `#tag` (a comment), `null`, leading/trailing spaces, newlines — is
+/// double-quoted and escaped instead, the way Obsidian writes links.
+pub fn yaml_scalar(s: &str) -> String {
+    if reads_back_plain(s) {
+        return s.to_string();
+    }
+
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 /// Splits `content` into its raw frontmatter block (opening `---` through
