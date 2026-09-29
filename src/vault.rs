@@ -163,6 +163,15 @@ impl Vault {
     }
 
     pub fn create_note(&self, note_path: &str, content: &str, frontmatter_fields: Option<&Frontmatter>) -> anyhow::Result<NoteInfo> {
+        // Obsidian only treats `.md` files as notes, so a bare "Ideas" must
+        // become "Ideas.md". Check the suffix rather than `Path::extension`:
+        // a name like "Meeting 2024.01.05" has an "extension" but isn't one.
+        // Blank paths are left alone so validate_parent rejects them as empty.
+        let note_path = &if note_path.ends_with(".md") || note_path.trim().is_empty() {
+            note_path.to_string()
+        } else {
+            format!("{}.md", note_path)
+        };
         let full_path = self.validate_parent(note_path)?;
 
         if full_path.exists() {

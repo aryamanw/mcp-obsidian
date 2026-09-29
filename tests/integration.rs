@@ -1410,3 +1410,23 @@ fn test_vault_apply_template_keeps_note_order_and_appends_template_keys() {
     remove_fixture(name);
     let _ = std::fs::remove_file(template_dir.join("_test-order-tpl.md"));
 }
+
+#[test]
+fn test_vault_create_note_adds_md_extension() {
+    let vault = obsidian_mcp::vault::Vault::new(test_config());
+    for (input, file) in [
+        ("_test-no-ext", "_test-no-ext.md"),
+        ("_test-dotted 2024.01.05", "_test-dotted 2024.01.05.md"),
+        ("_test-has-ext.md", "_test-has-ext.md"),
+    ] {
+        remove_fixture(file);
+        let note = vault.create_note(input, "Body", None).unwrap();
+        assert_eq!(note.path, file);
+        assert!(test_vault_path().join(file).is_file());
+        assert!(!test_vault_path().join(format!("{}.md", file)).exists(), "no double extension");
+        remove_fixture(file);
+    }
+    let _ = vault.create_note("_test-dup", "x", None).unwrap();
+    assert!(vault.create_note("_test-dup.md", "x", None).is_err(), "bare and .md paths are the same note");
+    remove_fixture("_test-dup.md");
+}
